@@ -73,6 +73,59 @@ class SipHandler(val ctxt: Context) {
         "450006" -> "821080010585" // LG U+
         else -> null
     }
+
+    private fun decodeSmscScaPdu(raw: String?): String? {
+        val hex = raw
+            ?.trim()
+            ?.trim('"')
+            ?.replace(Regex("\\s+"), "")
+            ?: return null
+
+        if (!hex.matches(Regex("(?i)[0-9a-f]+")) || hex.length < 4 || hex.length % 2 != 0) {
+            return null
+        }
+
+        return try {
+            val scaLen = hex.substring(0, 2).toInt(16)
+            val expectedLen = (1 + scaLen) * 2
+            if (scaLen < 2 || hex.length != expectedLen) return null
+
+            val addrHex = hex.substring(4, expectedLen)
+            val digits = addrHex.chunked(2).joinToString("") { octet ->
+                "${octet[1]}${octet[0]}"
+            }.trimEnd('F', 'f')
+
+            if (digits.length < 5) return null
+
+            // 0x91 = international ISDN/telephone number. For RP-DATA we pass the
+            // canonical digits and add '+' later when building the RP SMSC address.
+            digits.takeIf { it.all(Char::isDigit) }
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    private fun normalizeSmscNumber(raw: String?): String? {
+        val trimmed = raw
+            ?.trim()
+            ?.trim('"')
+            ?.takeIf { it.isNotBlank() && it != "null" }
+            ?: return null
+
+        decodeSmscScaPdu(trimmed)?.let { decoded ->
+            Rlog.d(TAG, "Decoded SMSC SCA-PDU $trimmed -> $decoded")
+            return decoded
+        }
+
+        val strictNumber = Regex("""^\+?([0-9]{5,20})$""").matchEntire(trimmed)
+        if (strictNumber != null) return strictNumber.groupValues[1]
+
+        // RIL GET_SMSC_ADDRESS can be returned as: "491760000443",145
+        val looseNumber = Regex("""\+?([0-9]{5,20})""").find(trimmed)
+        if (looseNumber != null) return looseNumber.groupValues[1]
+
+        return null
+    }
     // Sess is more secure so default to it
     val requireNonsessAka = when(mcc + mnc) {
         "450006" -> true
@@ -2106,56 +2159,54 @@ Content-Length: 0
         successCb: (() -> Unit),
         failCb: (() -> Unit)
     ) {
-        val decodableSmsc = try {
-            PhoneNumberUtils.numberToCalledPartyBCD(smsSmsc, PhoneNumberUtils.BCD_EXTENDED_TYPE_CALLED_PARTY); true
-        } catch (t:Throwable) { false }
-
         val smsManager =
             ctxt.getSystemService(SmsManager::class.java).createForSubscriptionId(subId)
         val smscIdentity = try {
             val i = smsManager
                 .javaClass.getMethod("getSmscIdentity")
-                .invoke(smsManager) as Uri
-            if (i.host == null) null else i
+                .invoke(smsManager) as? Uri
+            if (i?.host.isNullOrBlank()) null else i
         } catch (t: Throwable) { null }
         Rlog.d(TAG, "Got smscIdentity $smscIdentity")
+
+        val frameworkSmsc = normalizeSmscNumber(smsSmsc)
+        val identitySmsc = normalizeSmscNumber(smscIdentity?.host)
+        val managerSmsc = try {
+            val smscStr = smsManager.smscAddress
+            val parsed = normalizeSmscNumber(smscStr)
+            Rlog.d(TAG, "Got smsc $smscStr, parsed $parsed")
+            parsed
+        } catch(t: Throwable) {
+            Rlog.d(TAG, "smscAddress failed", t)
+            null
+        }
+
         // make ref up?
         val smsc =
-            if (smsSmsc != null && decodableSmsc) smsSmsc
-            else if (forceSmsc != null) forceSmsc
-            else {
-                try {
-                    Rlog.d(TAG, "Got smsc $smscIdentity // host is ${smscIdentity?.host} // ${smscIdentity?.scheme} // ${smscIdentity?.path}")
-                    smscIdentity!!.host!!
-                } catch(t: Throwable) {
-                    try {
-                        Rlog.d(TAG, "getSmscIdentity failed", t)
-                        val smscStr = smsManager.smscAddress
-                        val smscMatchRegex = Regex("([0-9]+)")
-                        Rlog.d(TAG, "Got smsc $smscStr, match ${smscMatchRegex.find(smscStr!!)}")
-                        val match = smscMatchRegex.find(smscStr!!)!!
-                        match.groupValues[1]
-                    } catch(t: Throwable) {
-                        Rlog.d(TAG, "smscAddress failed", t)
-                        null
-                    }
-                }
-            }
+            frameworkSmsc
+                ?: forceSmsc
+                ?: identitySmsc
+                ?: managerSmsc
 
-        // smsc
-        val data = SipSmsEncodeSms(ref.toByte(), if(smsc == null) "" else "+$smsc", pdu)
-        Rlog.d(TAG, "sending sms ${data.toHex()} to smsc $smsc")
-        val dest =
-            if(smscIdentity != null)
-                "sip:$smscIdentity"
-            else
-                "sip:+$smsc@$realm"
+        // RP-DATA destination address. Passing an empty string makes
+        // PhoneNumberUtils.numberToCalledPartyBCD("") return null and crashes
+        // SipSmsEncodeSms(), so keep it null when we genuinely do not know it.
+        val rpSmsc = smsc?.let { "+$it" }
+        val data = SipSmsEncodeSms(ref.toByte(), rpSmsc, pdu)
+        Rlog.d(TAG, "sending sms ${data.toHex()} to smsc $smsc rpSmsc=$rpSmsc")
+
+        fun normalizeSipTarget(raw: String): String =
+            if (raw.startsWith("sip:", ignoreCase = true) || raw.startsWith("tel:", ignoreCase = true)) raw else "sip:$raw"
+
+        val smscSipIdentity = smscIdentity?.toString()?.let { normalizeSipTarget(it) }
+        val requestUri = smscSipIdentity ?: "sip:$realm"
+        val dest = smscSipIdentity ?: smsc?.let { "sip:+$it@$realm" } ?: "sip:$realm"
 
         // "sip:ipsmgw.lte-lguplus.co.kr",
         val msg =
             SipRequest(
                 SipMethod.MESSAGE,
-                "sip:${smscIdentity ?: realm}",
+                requestUri,
                 commonHeaders +
                     """
                     From: <$mySip>
