@@ -187,8 +187,18 @@ class PhhMmTelFeature(val slotId: Int) : PhhMmTelFeatureProtected(slotId) {
                     ImsStreamMediaProfile.RTT_MODE_DISABLED,
                 ))
 
-            callProfile.setCallExtra(ImsCallProfile.EXTRA_OI, from)
-            callProfile.setCallExtra(ImsCallProfile.EXTRA_DISPLAY_TEXT, from)
+            val callerNumber = from.trim()
+            callProfile.setCallExtra(ImsCallProfile.EXTRA_OI, callerNumber)
+            callProfile.setCallExtra(ImsCallProfile.EXTRA_CNA, callerNumber)
+            callProfile.setCallExtra(ImsCallProfile.EXTRA_DISPLAY_TEXT, callerNumber)
+            callProfile.setCallExtraInt(
+                ImsCallProfile.EXTRA_OIR,
+                ImsCallProfile.OIR_PRESENTATION_NOT_RESTRICTED
+            )
+            callProfile.setCallExtraInt(
+                ImsCallProfile.EXTRA_CNAP,
+                ImsCallProfile.OIR_PRESENTATION_NOT_RESTRICTED
+            )
             notifyIncomingCall(object: ImsCallSessionImplBase() {
                 var mState = State.IDLE
                 override fun getCallProfile(): ImsCallProfile {
