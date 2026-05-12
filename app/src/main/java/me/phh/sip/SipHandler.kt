@@ -342,6 +342,7 @@ class SipHandler(val ctxt: Context) {
         incomingAcceptedAwaitingAck.set(false)
         incomingHangupAfterAck.set(false)
         currentCall = null
+        clearPendingOutgoingInvite(closeRtpSocket = true, reason = "IMS reconnect")
         callGeneration.incrementAndGet()
         synchronized(prAckWaitLock) {
             prAckWait.clear()
@@ -1142,6 +1143,7 @@ a=sendrecv
         }
 
         currentCall = null
+        clearPendingOutgoingInvite(callId, closeRtpSocket = false, reason = "remote ${request.method}")
         onCancelledCall?.invoke(Object(), "", mapOf("call-id" to callId))
         return 200
     }
@@ -1162,6 +1164,14 @@ a=sendrecv
         val incomingResponseWriter: OutputStream? = null,
         val localCseq: AtomicInteger = AtomicInteger(2),
         val localSdpVersion: AtomicInteger = AtomicInteger(2),
+    )
+
+    private data class PendingOutgoingInvite(
+        val callId: String,
+        val destination: String,
+        val headers: SipHeadersMap,
+        val rtpSocket: DatagramSocket,
+        val cancelSent: AtomicBoolean = AtomicBoolean(false),
     )
 
     private data class AmrNbFrame(
@@ -1419,6 +1429,7 @@ a=sendrecv
     }
 
     var currentCall: Call? = null
+    private var pendingOutgoingInvite: PendingOutgoingInvite? = null
     fun acceptCall() {
         thread {
             val call = currentCall
@@ -1548,6 +1559,62 @@ a=sendrecv
         }
     }
 
+    private fun clearPendingOutgoingInvite(
+        callId: String? = null,
+        closeRtpSocket: Boolean = false,
+        reason: String,
+    ) {
+        val pending = pendingOutgoingInvite ?: return
+        if (callId != null && pending.callId != callId) return
+
+        Rlog.d(TAG, "Clearing pending outgoing INVITE callId=${pending.callId} closeRtpSocket=$closeRtpSocket reason=$reason")
+        pendingOutgoingInvite = null
+        if (closeRtpSocket && currentCall?.rtpSocket !== pending.rtpSocket) {
+            try {
+                pending.rtpSocket.close()
+            } catch (t: Throwable) {
+                Rlog.d(TAG, "Closing pending outgoing RTP socket failed", t)
+            }
+        }
+    }
+
+    private fun sendCancelForPendingOutgoingInvite(pending: PendingOutgoingInvite, reason: String): Boolean {
+        if (!pending.cancelSent.compareAndSet(false, true)) {
+            Rlog.d(TAG, "CANCEL already sent for pending outgoing INVITE callId=${pending.callId} reason=$reason")
+            return false
+        }
+
+        val inviteCseqNumber = pending.headers["cseq"]?.getOrNull(0)?.substringBefore(" ") ?: "1"
+        val cancellableHeaders = pending.headers.filter { (k, _) ->
+            k in setOf(
+                "via",
+                "route",
+                "from",
+                "to",
+                "call-id",
+                "max-forwards",
+                "user-agent",
+                "p-access-network-info",
+                "security-verify",
+                "require",
+                "proxy-require",
+            )
+        }
+        val cancelHeaders = cancellableHeaders - "cseq" - "content-length" - "content-type" +
+            """
+            CSeq: $inviteCseqNumber CANCEL
+            Content-Length: 0
+            """.toSipHeadersMap()
+        val cancel = SipRequest(
+            SipMethod.CANCEL,
+            pending.destination,
+            headersParam = cancelHeaders,
+        )
+        Rlog.d(TAG, "Sending CANCEL for pending outgoing INVITE callId=${pending.callId} reason=$reason $cancel")
+        synchronized(socket.gWriter()) { socket.gWriter().write(cancel.toByteArray()) }
+        return true
+    }
+
     private fun sendByeForCall(call: Call) {
         val byeHeaders = localDialogHeadersForRequest(call, SipMethod.BYE)
         val bye = SipRequest(
@@ -1560,8 +1627,36 @@ a=sendrecv
     }
 
     fun terminateCall() {
-        val call = currentCall ?: return
+        val call = currentCall
+        val pendingOutgoing = pendingOutgoingInvite
+
+        if (call == null) {
+            if (pendingOutgoing != null) {
+                Rlog.w(TAG, "Local hangup while outgoing INVITE is still pending; sending CANCEL callId=${pendingOutgoing.callId}")
+                callStopped.set(true)
+                callStarted.set(false)
+                threadsStarted.set(false)
+                sendCancelForPendingOutgoingInvite(pendingOutgoing, "local hangup before dialog")
+                onCancelledCall?.invoke(Object(), "", mapOf("call-id" to pendingOutgoing.callId))
+                return
+            }
+
+            Rlog.w(TAG, "terminateCall without currentCall or pending outgoing INVITE")
+            return
+        }
+
         callStopped.set(true)
+
+        if (call.outgoing && !callStarted.get()) {
+            if (pendingOutgoing != null && pendingOutgoing.callId == call.callHeaders["call-id"]?.getOrNull(0)) {
+                Rlog.w(TAG, "Local hangup before outgoing INVITE final answer; sending CANCEL callId=${pendingOutgoing.callId}")
+                sendCancelForPendingOutgoingInvite(pendingOutgoing, "local hangup before final INVITE answer")
+                currentCall = null
+                onCancelledCall?.invoke(Object(), "", mapOf("call-id" to pendingOutgoing.callId))
+                return
+            }
+            Rlog.w(TAG, "Outgoing call not confirmed yet but no pending INVITE exists; falling back to BYE")
+        }
 
         if (!call.outgoing && incomingFinalResponseSent.get() && !callStarted.get()) {
             Rlog.w(TAG, "Local hangup before incoming ACK; deferring BYE until ACK and keeping 200 OK retransmission active")
@@ -1574,6 +1669,7 @@ a=sendrecv
         currentCall = null
         incomingAcceptedAwaitingAck.set(false)
         incomingHangupAfterAck.set(false)
+        clearPendingOutgoingInvite(call.callHeaders["call-id"]?.getOrNull(0), closeRtpSocket = false, reason = "confirmed call terminated")
         onCancelledCall?.invoke(Object(), "", emptyMap())
     }
 
@@ -1642,6 +1738,7 @@ a=sendrecv
             callStarted.set(false)
             threadsStarted.set(false)
             callGeneration.incrementAndGet()
+            clearPendingOutgoingInvite(closeRtpSocket = true, reason = "new outgoing call")
 
             val rtpSocket = try {
                 DatagramSocket(0, localAddr)
@@ -1735,7 +1832,24 @@ a=sendrecv
                     myHeaders,
                     sdp
                 )
-            setResponseCallback(msg.headers["call-id"]!![0]) { r: SipResponse ->
+            val outgoingInviteCallId = msg.headers["call-id"]!![0]
+            pendingOutgoingInvite = PendingOutgoingInvite(
+                callId = outgoingInviteCallId,
+                destination = to,
+                headers = msg.headers,
+                rtpSocket = rtpSocket,
+            )
+            setResponseCallback(outgoingInviteCallId) { r: SipResponse ->
+                val responseCallId = r.headers["call-id"]?.getOrNull(0).orEmpty()
+                val responseCseqForLog = r.headers["cseq"]?.getOrNull(0)
+                val activeCallIdForResponse = currentCall?.callHeaders?.get("call-id")?.getOrNull(0)
+                val pendingCallIdForResponse = pendingOutgoingInvite?.callId
+                if (responseCallId != outgoingInviteCallId ||
+                    (activeCallIdForResponse != responseCallId && pendingCallIdForResponse != responseCallId)) {
+                    Rlog.w(TAG, "Ignoring stale outgoing response: status=${r.statusCode} ${r.statusString} cseq=$responseCseqForLog callId=$responseCallId active=$activeCallIdForResponse pending=$pendingCallIdForResponse expected=$outgoingInviteCallId")
+                    return@setResponseCallback true
+                }
+
                 var resp = r
                 var cseq = resp.headers["cseq"]!![0]
 
@@ -1751,6 +1865,12 @@ a=sendrecv
                 if (cseq.contains("ACK")) return@setResponseCallback  false
 
                 if (cseq.contains("INVITE") && (resp.statusCode == 200 || resp.statusCode == 202)) {
+                    val finalInviteCallId = resp.headers["call-id"]?.getOrNull(0).orEmpty()
+                    val finalInviteAfterLocalCancel = pendingOutgoingInvite?.callId == finalInviteCallId &&
+                        pendingOutgoingInvite?.cancelSent?.get() == true
+                    if (finalInviteAfterLocalCancel) {
+                        Rlog.w(TAG, "Final INVITE answer arrived after local CANCEL; ACK first, then BYE once dialog state exists callId=$finalInviteCallId")
+                    }
                     // ACK C-Seq must be the same as INVITE C-Seq
                     // Extract C-Seq
                     val cseqLine = resp.headers["cseq"]!![0]
@@ -1799,20 +1919,45 @@ a=sendrecv
                     }
                     Rlog.d(TAG, "Outgoing confirmed dialog: remoteTarget=${currentCall?.remoteContact} nextLocalCseq=${currentCall?.localCseq?.get()} route=${currentCall?.callHeaders?.get("route")}")
                     Rlog.d(TAG, "Invite got SUCCESS")
-                    onOutgoingCallConnected?.invoke(Object(), emptyMap())
+                    if (finalInviteAfterLocalCancel) {
+                        Rlog.w(TAG, "Confirmed outgoing dialog after local CANCEL without final SDP; sending BYE immediately callId=$finalInviteCallId")
+                        currentCall?.let { sendByeForCall(it) }
+                        currentCall = null
+                        clearPendingOutgoingInvite(finalInviteCallId, closeRtpSocket = true, reason = "final answer without SDP after local CANCEL")
+                        return@setResponseCallback true
+                    } else {
+                        clearPendingOutgoingInvite(finalInviteCallId, closeRtpSocket = false, reason = "final INVITE answer without SDP")
+                        onOutgoingCallConnected?.invoke(Object(), emptyMap())
+                    }
                 } else {
                     Rlog.d(TAG, "Invite got status ${resp.statusCode} = ${resp.statusString}")
                     if(resp.statusCode >= 400) {
                         val failedCallId = resp.headers["call-id"]?.getOrNull(0).orEmpty()
                         val failedCseq = resp.headers["cseq"]?.getOrNull(0).orEmpty()
+                        val activeCallId = currentCall?.callHeaders?.get("call-id")?.getOrNull(0)
+                        val pendingCallId = pendingOutgoingInvite?.callId
+
+                        if (activeCallId != failedCallId && pendingCallId != failedCallId) {
+                            Rlog.w(TAG, "Ignoring stale outgoing dialog failure: status=${resp.statusCode} ${resp.statusString} cseq=$failedCseq callId=$failedCallId active=$activeCallId pending=$pendingCallId")
+                            return@setResponseCallback true
+                        }
+
                         Rlog.w(TAG, "Outgoing dialog request failed: status=${resp.statusCode} ${resp.statusString} cseq=$failedCseq callId=$failedCallId")
                         callStopped.set(true)
                         callStarted.set(false)
                         threadsStarted.set(false)
-                        val activeCallId = currentCall?.callHeaders?.get("call-id")?.getOrNull(0)
+
+                        val failedPending = pendingOutgoingInvite
+                        if (failedPending != null && failedPending.callId == failedCallId &&
+                            !failedCseq.contains("INVITE") && !failedPending.cancelSent.get()) {
+                            Rlog.w(TAG, "Early outgoing in-dialog request failed; cancelling pending INVITE callId=$failedCallId")
+                            sendCancelForPendingOutgoingInvite(failedPending, "early dialog request failed: $failedCseq ${resp.statusCode}")
+                        }
+
                         if (activeCallId == failedCallId) {
                             currentCall = null
                         }
+                        clearPendingOutgoingInvite(failedCallId, closeRtpSocket = activeCallId != failedCallId, reason = "outgoing dialog failure $failedCseq ${resp.statusCode}")
                         onCancelledCall?.invoke(Object(), "",
                             mapOf(
                                 "statusCode" to resp.statusCode.toString(),
@@ -1884,6 +2029,18 @@ a=sendrecv
                 Rlog.d(TAG, "Outgoing $outgoingDialogPhase dialog SDP: status=${resp.statusCode} cseq=$responseCseq remoteTarget=${currentCall?.remoteContact} nextLocalCseq=${currentCall?.localCseq?.get()} route=${currentCall?.callHeaders?.get("route")}")
 
                 if (responseCseq.contains("INVITE") && (resp.statusCode == 200 || resp.statusCode == 202)) {
+                    val finalInviteCallId = resp.headers["call-id"]?.getOrNull(0).orEmpty()
+                    val finalInviteAfterLocalCancel = pendingOutgoingInvite?.callId == finalInviteCallId &&
+                        pendingOutgoingInvite?.cancelSent?.get() == true
+                    if (finalInviteAfterLocalCancel) {
+                        Rlog.w(TAG, "Confirmed outgoing dialog after local CANCEL; sending BYE immediately callId=$finalInviteCallId")
+                        currentCall?.let { sendByeForCall(it) }
+                        currentCall = null
+                        clearPendingOutgoingInvite(finalInviteCallId, closeRtpSocket = true, reason = "final answer after local CANCEL")
+                        return@setResponseCallback true
+                    }
+
+                    clearPendingOutgoingInvite(finalInviteCallId, closeRtpSocket = false, reason = "final INVITE answer")
                     if (threadsStarted.compareAndSet(false, true)) {
                         Rlog.d(TAG, "Starting outgoing media threads from final INVITE SDP")
                         callDecodeThread()
