@@ -1125,19 +1125,50 @@ a=sendrecv
         Rlog.d(TAG, "Cancelled call $callId method=${request.method}")
 
         if (isCancel) {
-            val responseHeaders = responseHeadersFromRequest(
+            val cancelResponseWriter = currentCall?.incomingResponseWriter ?: requestWriters[callId] ?: socket.gWriter()
+            val toOverride = currentCall?.callHeaders?.get("to") ?: request.headers["to"]
+
+            // RFC 3261: CANCEL is its own transaction. Reply 200 OK to the CANCEL,
+            // then terminate the original INVITE transaction with 487 using CSeq: INVITE.
+            // Do not let parseMessage emit an extra generic 200 OK with a different To tag.
+            val cancelOkHeaders = responseHeadersFromRequest(
                 request,
+                toOverride = toOverride,
                 extra = "Content-Length: 0".toSipHeadersMap(),
             )
-            val response = SipResponse(
-                statusCode = 487,
-                statusString = "Request Terminated",
-                headersParam = responseHeaders,
+            val cancelOk = SipResponse(
+                statusCode = 200,
+                statusString = "OK",
+                headersParam = cancelOkHeaders,
                 autofill = false
             )
-            Rlog.d(TAG, "Sending $response")
-            val cancelResponseWriter = currentCall?.incomingResponseWriter ?: requestWriters[callId] ?: socket.gWriter()
-            synchronized(cancelResponseWriter) { cancelResponseWriter.write(response.toByteArray()) }
+            Rlog.d(TAG, "Sending 200 OK to CANCEL $cancelOk")
+            synchronized(cancelResponseWriter) { cancelResponseWriter.write(cancelOk.toByteArray()) }
+
+            val originalInviteCseq = request.headers["cseq"]?.getOrNull(0)
+                ?.replace(Regex("\\bCANCEL\\b", RegexOption.IGNORE_CASE), "INVITE")
+                ?: "1 INVITE"
+            val inviteTerminatedHeaders = responseHeadersFromRequest(
+                request,
+                toOverride = toOverride,
+                extra = """
+                    CSeq: $originalInviteCseq
+                    Content-Length: 0
+                    """.toSipHeadersMap(),
+            )
+            val inviteTerminated = SipResponse(
+                statusCode = 487,
+                statusString = "Request Terminated",
+                headersParam = inviteTerminatedHeaders,
+                autofill = false
+            )
+            Rlog.d(TAG, "Sending 487 for cancelled INVITE $inviteTerminated")
+            synchronized(cancelResponseWriter) { cancelResponseWriter.write(inviteTerminated.toByteArray()) }
+
+            currentCall = null
+            clearPendingOutgoingInvite(callId, closeRtpSocket = false, reason = "remote CANCEL")
+            onCancelledCall?.invoke(Object(), "", mapOf("call-id" to callId))
+            return 0
         } else if (!isBye) {
             Rlog.w(TAG, "handleCancel called for unexpected method ${request.method}")
         }
