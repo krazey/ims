@@ -2072,7 +2072,7 @@ a=sendrecv
                                 """.toSipHeadersMap()
                         )
                     Rlog.d(TAG, "Sending $msg2")
-                    synchronized(socket.gWriter()) { socket.gWriter().write(msg2.toByteArray()) }
+                    synchronized(socket.gWriter()) { socket.gWriter().write(msg2.toByteArray()); socket.gWriter().flush() }
                     callStarted.set(true)
                     // Update dialog route set from the confirmed 200 OK (RFC 3261 §12.1.2)
                     // so that subsequent in-dialog requests (BYE, UPDATE) use the correct route.
@@ -2250,8 +2250,10 @@ a=sendrecv
                     Rlog.d(TAG, "precondition: Curr is $currLocal $localNone")
                     val currRemote = respSdp.first { it.startsWith("a=curr:qos remote")}
                     val remoteNone = currRemote.contains("none")
-
-                    if (localNone) {
+                    val remoteHasLocalQos = currLocal.contains("sendrecv")
+                    val needsLocalQosUpdate = localNone || remoteNone
+                    Rlog.d(TAG, "precondition: Remote is $currRemote remoteNone=$remoteNone remoteHasLocalQos=$remoteHasLocalQos needsLocalQosUpdate=$needsLocalQosUpdate")
+                    if (needsLocalQosUpdate) {
                         // "Allocating our local resource" and update the call
                         if (threadsStarted.compareAndSet(false, true)) {
                             Rlog.d(TAG, "Starting outgoing media threads from precondition 183 SDP")
@@ -2272,7 +2274,7 @@ a=sendrecv
                                     }
                                     line.startsWith("a=maxptime:") -> remoteMaxptimeLine
                                     line.startsWith("a=curr:qos local") -> "a=curr:qos local sendrecv"
-                                    line.startsWith("a=curr:qos remote") -> "a=curr:qos remote none"
+                                    line.startsWith("a=curr:qos remote") -> if (remoteHasLocalQos) "a=curr:qos remote sendrecv" else "a=curr:qos remote none"
                                     else -> line
                                 }
                             }
