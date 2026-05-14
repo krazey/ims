@@ -194,16 +194,7 @@ class SipHandler(val ctxt: Context) {
     }
 
     private fun writeSipBytes(writer: OutputStream, bytes: ByteArray, label: String): Boolean {
-        return try {
-            synchronized(writer) {
-                writer.write(bytes)
-                writer.flush()
-            }
-            true
-        } catch (t: Throwable) {
-            Rlog.w(TAG, "Failed to write SIP bytes for $label", t)
-            false
-        }
+        return SipMessageWriter.write(TAG, writer, bytes, label)
     }
 
     
