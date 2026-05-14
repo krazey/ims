@@ -192,6 +192,13 @@ class SipHandler(val ctxt: Context) {
     private var smsToken = 0
     private val smsHeadersMap = mutableMapOf<Int, smsHeaders>()
 
+    private fun stopCallRuntime(reason: String) {
+        Rlog.d(TAG, "Stopping call runtime state: $reason")
+        callStopped.set(true)
+        callStarted.set(false)
+        threadsStarted.set(false)
+    }
+
     private fun writeSipBytes(writer: OutputStream, bytes: ByteArray, label: String): Boolean {
         return try {
             synchronized(writer) {
@@ -317,9 +324,7 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
     }
 
     private fun clearCallAndCallbackStateForReconnect() {
-        callStopped.set(true)
-        callStarted.set(false)
-        threadsStarted.set(false)
+        stopCallRuntime("IMS reconnect")
         incomingFinalResponseSent.set(false)
         incomingAcceptedAwaitingAck.set(false)
         incomingHangupAfterAck.set(false)
@@ -1341,9 +1346,7 @@ a=sendrecv
             val cancelResponseWriter = dispatcher.writerForCallId(callId) ?: currentCall?.incomingResponseWriter ?: socket.gWriter()
             synchronized(cancelResponseWriter) { cancelResponseWriter.write(response.toByteArray()) }
 
-            callStopped.set(true)
-            callStarted.set(false)
-            threadsStarted.set(false)
+            stopCallRuntime("call cleanup")
             incomingAcceptedAwaitingAck.set(false)
             incomingHangupAfterAck.set(false)
             currentCall = null
@@ -1351,9 +1354,7 @@ a=sendrecv
             return 0
         }
 
-        callStopped.set(true)
-        callStarted.set(false)
-        threadsStarted.set(false)
+        stopCallRuntime("call cleanup")
         synchronized(prAckWaitLock) {
             prAckWait.clear()
             prAckWaitLock.notifyAll()
@@ -1719,9 +1720,7 @@ a=sendrecv
 
                 Rlog.w(TAG, "No post-answer RTP within ${timeoutMs}ms for outgoing call; terminating no-media dialog as network reject callId=$callId")
                 callId?.let { outgoingConnectedCallIds.remove(it) }
-                callStopped.set(true)
-                callStarted.set(false)
-                threadsStarted.set(false)
+                stopCallRuntime("post-answer RTP timeout")
                 try {
                     sendByeForCall(activeCall)
                 } catch (t: Throwable) {
@@ -1831,9 +1830,7 @@ a=sendrecv
                     incomingAcceptedAwaitingAck.set(false)
                     incomingHangupAfterAck.set(false)
                     if (currentCall?.callIdOrNull() == acceptedCallId && !callStarted.get()) {
-                        callStopped.set(true)
-                        callStarted.set(false)
-                        threadsStarted.set(false)
+                        stopCallRuntime("call cleanup")
                         rememberTerminatedIncomingCall(acceptedCallId, "incoming ACK timeout")
                         currentCall = null
                         onCancelledCall?.invoke(Object(), "", mapOf("call-id" to acceptedCallId))
@@ -1894,9 +1891,7 @@ a=sendrecv
             Rlog.d(TAG, "Sending $msg via incomingResponseWriter=${call.incomingResponseWriter != null}")
             synchronized(responseWriter) { responseWriter.write(msg.toByteArray()) }
 
-            callStopped.set(true)
-            callStarted.set(false)
-            threadsStarted.set(false)
+            stopCallRuntime("call cleanup")
             incomingFinalResponseSent.set(false)
             incomingAcceptedAwaitingAck.set(false)
             incomingHangupAfterAck.set(false)
@@ -1985,9 +1980,7 @@ a=sendrecv
         if (call == null) {
             if (pendingOutgoing != null) {
                 Rlog.w(TAG, "Local hangup while outgoing INVITE is still pending; sending CANCEL callId=${pendingOutgoing.callId}")
-                callStopped.set(true)
-                callStarted.set(false)
-                threadsStarted.set(false)
+                stopCallRuntime("local terminate")
                 sendCancelForPendingOutgoingInvite(pendingOutgoing, "local hangup before dialog")
                 onCancelledCall?.invoke(Object(), "", mapOf("call-id" to pendingOutgoing.callId))
                 return
@@ -2324,9 +2317,7 @@ a=sendrecv
                         }
 
                         Rlog.w(TAG, "Outgoing dialog request failed: status=${resp.statusCode} ${resp.statusString} cseq=$failedCseq callId=$failedCallId")
-                        callStopped.set(true)
-                        callStarted.set(false)
-                        threadsStarted.set(false)
+                        stopCallRuntime("outgoing dialog failure")
 
                         val failedPending = pendingOutgoingInvite
                         if (failedPending != null && failedPending.callId == failedCallId &&
