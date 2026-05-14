@@ -1894,7 +1894,7 @@ a=sendrecv
         closeRtpSocket: Boolean = false,
         reason: String,
     ) {
-        callId?.let { outgoingConnectedCallIds.remove(it) }
+        if (!reason.startsWith("final INVITE answer")) callId?.let { outgoingConnectedCallIds.remove(it) }
         val pending = pendingOutgoingInvite ?: return
         if (callId != null && pending.callId != callId) return
 
