@@ -155,15 +155,7 @@ class PhhMmTelFeature(val slotId: Int) : PhhMmTelFeatureProtected(slotId) {
             sipHandler.onOutgoingCallConnected = { _: Object, _: Map<String, String> ->
                 Rlog.d(TAG, "Outgoing call connected")
                 session.mState = ImsCallSessionImplBase.State.ESTABLISHED
-                val callProfile = ImsCallProfile(ImsCallProfile.SERVICE_TYPE_NORMAL, ImsCallProfile.CALL_TYPE_VOICE,
-                    Bundle(),
-                    ImsStreamMediaProfile(
-                        ImsStreamMediaProfile.AUDIO_QUALITY_AMR,
-                        ImsStreamMediaProfile.DIRECTION_SEND_RECEIVE,
-                        ImsStreamMediaProfile.VIDEO_QUALITY_NONE,
-                        ImsStreamMediaProfile.DIRECTION_INACTIVE,
-                        ImsStreamMediaProfile.RTT_MODE_DISABLED,
-                    ))
+                val callProfile = makeVoiceCallProfile()
                 session.mListener.callSessionInitiated(callProfile)
             }
         }
@@ -187,6 +179,41 @@ class PhhMmTelFeature(val slotId: Int) : PhhMmTelFeatureProtected(slotId) {
     override fun getUt(): ImsUtImplBase {
         Rlog.d(TAG, "$slotId getUt")
         return ImsUtImplBase()
+    }
+
+    private fun makeVoiceCallProfile(
+        callerNumber: String? = null,
+        audioQuality: Int = ImsStreamMediaProfile.AUDIO_QUALITY_AMR,
+    ): ImsCallProfile {
+        val callProfile = ImsCallProfile(
+            ImsCallProfile.SERVICE_TYPE_NORMAL,
+            ImsCallProfile.CALL_TYPE_VOICE,
+            Bundle(),
+            ImsStreamMediaProfile(
+                audioQuality,
+                ImsStreamMediaProfile.DIRECTION_SEND_RECEIVE,
+                ImsStreamMediaProfile.VIDEO_QUALITY_NONE,
+                ImsStreamMediaProfile.DIRECTION_INACTIVE,
+                ImsStreamMediaProfile.RTT_MODE_DISABLED,
+            ),
+        )
+
+        val normalizedCaller = callerNumber?.trim()?.takeIf { it.isNotEmpty() }
+        if (normalizedCaller != null) {
+            callProfile.setCallExtra(ImsCallProfile.EXTRA_OI, normalizedCaller)
+            callProfile.setCallExtra(ImsCallProfile.EXTRA_CNA, normalizedCaller)
+            callProfile.setCallExtra(ImsCallProfile.EXTRA_DISPLAY_TEXT, normalizedCaller)
+            callProfile.setCallExtraInt(
+                ImsCallProfile.EXTRA_OIR,
+                ImsCallProfile.OIR_PRESENTATION_NOT_RESTRICTED,
+            )
+            callProfile.setCallExtraInt(
+                ImsCallProfile.EXTRA_CNAP,
+                ImsCallProfile.OIR_PRESENTATION_NOT_RESTRICTED,
+            )
+        }
+
+        return callProfile
     }
 
     private fun cancelledReasonInfo(map: Map<*, *>): ImsReasonInfo {
@@ -236,27 +263,10 @@ class PhhMmTelFeature(val slotId: Int) : PhhMmTelFeatureProtected(slotId) {
 
         var callListener: ImsCallSessionListener? = null
         sipHandler.onIncomingCall = { handle: Object, from: String, extras: Map<String, String> -> 
-            val callProfile = ImsCallProfile(ImsCallProfile.SERVICE_TYPE_NORMAL, ImsCallProfile.CALL_TYPE_VOICE,
-                Bundle(),
-                ImsStreamMediaProfile(
-                    ImsStreamMediaProfile.AUDIO_QUALITY_EVS_FB,
-                    ImsStreamMediaProfile.DIRECTION_SEND_RECEIVE,
-                    ImsStreamMediaProfile.VIDEO_QUALITY_NONE,
-                    ImsStreamMediaProfile.DIRECTION_INACTIVE,
-                    ImsStreamMediaProfile.RTT_MODE_DISABLED,
-                ))
-
             val callerNumber = from.trim()
-            callProfile.setCallExtra(ImsCallProfile.EXTRA_OI, callerNumber)
-            callProfile.setCallExtra(ImsCallProfile.EXTRA_CNA, callerNumber)
-            callProfile.setCallExtra(ImsCallProfile.EXTRA_DISPLAY_TEXT, callerNumber)
-            callProfile.setCallExtraInt(
-                ImsCallProfile.EXTRA_OIR,
-                ImsCallProfile.OIR_PRESENTATION_NOT_RESTRICTED
-            )
-            callProfile.setCallExtraInt(
-                ImsCallProfile.EXTRA_CNAP,
-                ImsCallProfile.OIR_PRESENTATION_NOT_RESTRICTED
+            val callProfile = makeVoiceCallProfile(
+                callerNumber,
+                ImsStreamMediaProfile.AUDIO_QUALITY_EVS_FB,
             )
             notifyIncomingCall(object: ImsCallSessionImplBase() {
                 var mState = State.IDLE
@@ -334,7 +344,8 @@ class PhhMmTelFeature(val slotId: Int) : PhhMmTelFeatureProtected(slotId) {
         }
         sipHandler.onCancelledCall = { param: Object, reason: String, map: Map<String, String> ->
     Rlog.d(TAG, "Cancelling call")
-        val reasonInfo = cancelledReasonInfo(map) if (outgoingCallActive) {
+        val reasonInfo = cancelledReasonInfo(map)
+            if (outgoingCallActive) {
         outgoingCallListener?.callSessionTerminated(reasonInfo)
         outgoingCallActive = false
         outgoingCallListener = null
