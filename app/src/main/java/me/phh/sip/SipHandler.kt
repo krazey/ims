@@ -158,6 +158,19 @@ class SipHandler(val ctxt: Context) {
     private var smsToken = 0
     private val smsHeadersMap = mutableMapOf<Int, smsHeaders>()
 
+    private fun writeSipBytes(writer: OutputStream, bytes: ByteArray, label: String): Boolean {
+        return try {
+            synchronized(writer) {
+                writer.write(bytes)
+                writer.flush()
+            }
+            true
+        } catch (t: Throwable) {
+            Rlog.w(TAG, "Failed to write SIP bytes for $label", t)
+            false
+        }
+    }
+
     fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         cbLock.withLock { requestCallbacks += (method to cb) }
     }
@@ -716,14 +729,27 @@ class SipHandler(val ctxt: Context) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 while (true) {
-                    // XXX catch and reconnect on 'java.net.SocketException: Socket closed' ?
-                    val client = serverSocket.serverSocket.accept()
-                    // there can only be a single client at a time because
-                    // both source and destination ports are fixed
-                    val reader = client.getInputStream().sipReader()
-                    val writer = client.getOutputStream()
-                    while (parseMessage(reader, writer)) { }
-                    client.close()
+                    var client: Socket? = null
+                    try {
+                        // there can only be a single client at a time because
+                        // both source and destination ports are fixed
+                        client = serverSocket.serverSocket.accept()
+                        val reader = client.getInputStream().sipReader()
+                        val writer = client.getOutputStream()
+                        while (parseMessage(reader, writer)) {
+                        }
+                    } catch (t: Throwable) {
+                        if (serverSocket.serverSocket.isClosed) {
+                            throw t
+                        }
+                        Rlog.w(TAG, "Got exception in accepted TCP server SIP flow; keeping IMS server socket alive", t)
+                    } finally {
+                        try {
+                            client?.close()
+                        } catch (t: Throwable) {
+                            Rlog.d(TAG, "Closing accepted TCP server SIP flow failed", t)
+                        }
+                    }
                 }
             } catch(t: Throwable) {
                 Rlog.w(TAG, "Got exception in TCP server socket, reconnecting", t)
@@ -1582,9 +1608,14 @@ a=sendrecv
             val acceptedCallId = call.callHeaders["call-id"]?.getOrNull(0).orEmpty()
             val responseBytes = msg3.toByteArray()
             Rlog.d(TAG, "Sending $msg3 via incomingResponseWriter=${call.incomingResponseWriter != null}")
-            synchronized(responseWriter) { responseWriter.write(responseBytes) }
-
-            incomingFinalResponseSent.set(true)
+                if (!writeSipBytes(responseWriter, responseBytes, "incoming INVITE final 200 OK callId=$acceptedCallId")) {
+                    incomingFinalResponseSent.set(false)
+                    incomingAcceptedAwaitingAck.set(false)
+                    incomingHangupAfterAck.set(false)
+                    onCancelledCall?.invoke(Object(), "", mapOf("call-id" to acceptedCallId))
+                    return@thread
+                }
+                incomingFinalResponseSent.set(true)
             incomingAcceptedAwaitingAck.set(true)
             incomingHangupAfterAck.set(false)
 
@@ -1601,8 +1632,25 @@ a=sendrecv
                     val stillSameCall = currentCall?.callHeaders?.get("call-id")?.getOrNull(0) == acceptedCallId
                     if (!incomingAcceptedAwaitingAck.get() || !stillSameCall) break
                     Rlog.w(TAG, "Retransmitting incoming 200 OK waiting for ACK callId=$acceptedCallId elapsed=${elapsedMs}ms")
-                    synchronized(responseWriter) { responseWriter.write(responseBytes) }
+                    if (!writeSipBytes(responseWriter, responseBytes, "incoming INVITE final 200 OK retransmit callId=$acceptedCallId elapsed=${elapsedMs}ms")) {
+                        Rlog.w(TAG, "Stopping incoming 200 OK retransmit after write failure callId=$acceptedCallId elapsed=${elapsedMs}ms")
+                        incomingAcceptedAwaitingAck.set(false)
+                        incomingHangupAfterAck.set(false)
+                        break
+                    }
                     delayMs = (delayMs * 2).coerceAtMost(4000L)
+                }
+                if (incomingAcceptedAwaitingAck.get()) {
+                    Rlog.w(TAG, "Incoming accepted call still has no ACK after ${elapsedMs}ms; clearing pending accepted state callId=$acceptedCallId")
+                    incomingAcceptedAwaitingAck.set(false)
+                    incomingHangupAfterAck.set(false)
+                    if (currentCall?.callHeaders?.get("call-id")?.getOrNull(0) == acceptedCallId && !callStarted.get()) {
+                        callStopped.set(true)
+                        callStarted.set(false)
+                        threadsStarted.set(false)
+                        currentCall = null
+                        onCancelledCall?.invoke(Object(), "", mapOf("call-id" to acceptedCallId))
+                    }
                 }
             }
 
