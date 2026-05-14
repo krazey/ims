@@ -156,6 +156,8 @@ class SipHandler(val ctxt: Context) {
 
     private val reconnecting = AtomicBoolean(false)
     private val reconnectRetryScheduled = AtomicBoolean(false)
+    private val imsNetworkRequestRestartScheduled = AtomicBoolean(false)
+
     private val imsConnectFailureCount = AtomicInteger(0)
     private val reconnectGeneration = AtomicInteger(0)
     private val pendingReconnectLock = Object()
@@ -337,7 +339,75 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         resetRegistrationStateForConnect()
     }
 
-    private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
+    
+    private fun ratName(rat: Int): String = when (rat) {
+        TelephonyManager.NETWORK_TYPE_LTE -> "LTE"
+        TelephonyManager.NETWORK_TYPE_NR -> "NR"
+        TelephonyManager.NETWORK_TYPE_IWLAN -> "IWLAN"
+        TelephonyManager.NETWORK_TYPE_EDGE -> "EDGE"
+        TelephonyManager.NETWORK_TYPE_GPRS -> "GPRS"
+        TelephonyManager.NETWORK_TYPE_GSM -> "GSM"
+        TelephonyManager.NETWORK_TYPE_UMTS -> "UMTS"
+        TelephonyManager.NETWORK_TYPE_HSPA -> "HSPA"
+        TelephonyManager.NETWORK_TYPE_HSDPA -> "HSDPA"
+        TelephonyManager.NETWORK_TYPE_HSUPA -> "HSUPA"
+        TelephonyManager.NETWORK_TYPE_UNKNOWN -> "UNKNOWN"
+        else -> "rat($rat)"
+    }
+
+    private fun isRatReadyForImsNetworkRequest(): Boolean {
+        val dataRat = try { telephonyManager.dataNetworkType } catch (t: Throwable) { TelephonyManager.NETWORK_TYPE_UNKNOWN }
+        val voiceRat = try { telephonyManager.voiceNetworkType } catch (t: Throwable) { TelephonyManager.NETWORK_TYPE_UNKNOWN }
+        val ready = dataRat == TelephonyManager.NETWORK_TYPE_LTE ||
+            dataRat == TelephonyManager.NETWORK_TYPE_NR ||
+            dataRat == TelephonyManager.NETWORK_TYPE_IWLAN ||
+            voiceRat == TelephonyManager.NETWORK_TYPE_LTE ||
+            voiceRat == TelephonyManager.NETWORK_TYPE_NR
+        Rlog.d(TAG, "IMS network request RAT gate: data=${ratName(dataRat)} voice=${ratName(voiceRat)} ready=$ready")
+        return ready
+    }
+
+    private fun scheduleImsNetworkRequestRestart(reason: String, initialDelayMs: Long = 12_000L) {
+        if (!imsNetworkRequestRestartScheduled.compareAndSet(false, true)) {
+            Rlog.w(TAG, "IMS network request restart already scheduled, ignore: $reason")
+            return
+        }
+        thread {
+            try {
+                var delayMs = initialDelayMs
+                while (true) {
+                    Rlog.w(TAG, "Will request IMS network after ${delayMs}ms if RAT is IMS-capable: $reason")
+                    Thread.sleep(delayMs)
+                    if (isRatReadyForImsNetworkRequest()) {
+                        Rlog.w(TAG, "Re-requesting IMS network after RAT recovered: $reason")
+                        getVolteNetwork()
+                        return@thread
+                    }
+                    delayMs = 5_000L
+                }
+            } catch (t: Throwable) {
+                Rlog.e(TAG, "IMS network request restart failed: $reason", t)
+            } finally {
+                imsNetworkRequestRestartScheduled.set(false)
+            }
+        }
+    }
+
+    private fun shouldReconnectAfterSipTransportLoss(reason: String): Boolean {
+        if (!this::network.isInitialized) {
+            Rlog.w(TAG, "Suppressing IMS reconnect for $reason because no IMS network is initialized")
+            return false
+        }
+        val lp = try { connectivityManager.getLinkProperties(network) } catch (t: Throwable) { null }
+        if (lp == null) {
+            Rlog.w(TAG, "Suppressing IMS reconnect for $reason because current IMS network has no link properties")
+            scheduleImsNetworkRequestRestart("SIP transport lost with stale IMS network: $reason")
+            return false
+        }
+        return true
+    }
+
+private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         val retryNetwork = if (this::network.isInitialized) network else null
         if (retryNetwork == null) {
             Rlog.w(TAG, "Cannot schedule IMS reconnect retry without a Network: $reason")
@@ -488,7 +558,8 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         Rlog.d(TAG, "Got link properties $lp")
         if (lp == null) {
             Rlog.w(TAG, "No link properties for IMS network")
-            failConnectAndRetry("No link properties for IMS network")
+            imsFailureCallback?.invoke()
+            scheduleImsNetworkRequestRestart("No link properties for current IMS network")
             return
         }
         imsRegistrationTech = detectRegistrationTech(lp)
@@ -699,7 +770,7 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
             } catch(t: Throwable) {
                 Rlog.w(TAG, "Got exception in main/control socket, reconnecting", t)
             }
-            reconnectIms("main/control SIP socket lost")
+            if (shouldReconnectAfterSipTransportLoss("main/control SIP socket lost")) reconnectIms("main/control SIP socket lost")
         }
         CoroutineScope(Dispatchers.IO).launch {
             try {
@@ -728,7 +799,7 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
                 }
             } catch(t: Throwable) {
                 Rlog.w(TAG, "Got exception in TCP server socket, reconnecting", t)
-                reconnectIms("TCP server SIP socket lost")
+                if (shouldReconnectAfterSipTransportLoss("TCP server SIP socket lost")) reconnectIms("TCP server SIP socket lost")
             }
         }
         CoroutineScope(Dispatchers.IO).launch {
@@ -757,6 +828,11 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
     fun getVolteNetwork() {
         // TODO add something similar for VoWifi ipsec tunnel?
         Rlog.d(TAG, "Requesting IMS network")
+        if (!isRatReadyForImsNetworkRequest()) {
+            Rlog.w(TAG, "Deferring IMS network request until LTE/NR/IWLAN is back")
+            scheduleImsNetworkRequestRestart("RAT not ready for IMS network request")
+            return
+        }
         connectivityManager.requestNetwork(NetworkRequest.Builder()
             //.addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
             //.addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -772,12 +848,19 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
                 override fun onLost(lostNetwork: Network) {
                     Rlog.d(TAG, "IMS network lost $lostNetwork")
                     if (this@SipHandler::network.isInitialized && network == lostNetwork) {
-                        Rlog.w(TAG, "Current IMS network was lost; dropping SIP state")
+                        try {
+                    connectivityManager.unregisterNetworkCallback(this)
+                    Rlog.w(TAG, "Unregistered stale IMS NetworkCallback after loss to avoid immediate GERAN IMS APN retry")
+                } catch (t: Throwable) {
+                    Rlog.d(TAG, "Unregistering stale IMS NetworkCallback failed", t)
+                }
+                Rlog.w(TAG, "Current IMS network was lost; dropping SIP state")
                         Rlog.w(TAG, "Invalidating IMS reconnect generation: current IMS network lost")
                         reconnectGeneration.incrementAndGet()
                         dropImsConnection("IMS network lost")
                         abandonnedBecauseOfNoPcscf = true
                         imsFailureCallback?.invoke()
+                scheduleImsNetworkRequestRestart("IMS network lost $lostNetwork")
                     }
                 }
 
