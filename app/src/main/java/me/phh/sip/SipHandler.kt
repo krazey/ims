@@ -1521,8 +1521,8 @@ a=sendrecv
         val call = currentCall!!
         val gen = callGeneration.get()
         thread {
-            var sequenceNumber = 0
-
+            rtpSequenceNumber.set(0)
+            rtpTimestampSamples.set(0)
             Rlog.d(TAG, "Encode thread started: amrTrack=${call.amrTrack} remote=${call.rtpRemoteAddr}:${call.rtpRemotePort} gen=$gen")
             val encoder = MediaCodec.createEncoderByType("audio/3gpp")
             val mediaFormat = MediaFormat.createAudioFormat("audio/3gpp", 8000, 1)
@@ -1538,7 +1538,8 @@ a=sendrecv
                     encoder.release()
                     return@thread
                 }
-                val timestamp = sequenceNumber * 160
+                val sequenceNumber = rtpSequenceNumber.getAndIncrement()
+                val timestamp = rtpTimestampSamples.getAndAdd(160)
                 Thread.sleep(20)
                 val sendCall = currentCall ?: call
                 val rtpHeader = listOf(
@@ -1563,9 +1564,8 @@ a=sendrecv
                     encoder.release()
                     return@thread
                 }
-                sequenceNumber++
-            }
-            Rlog.d(TAG, "Silence loop exited after $sequenceNumber packets, starting real encoding")
+                }
+                Rlog.d(TAG, "Silence loop exited after ${rtpSequenceNumber.get()} packets, starting real encoding")
             if (!call.outgoing && incomingMicStartDelayMs > 0L) {
                 val settleDeadline = System.currentTimeMillis() + incomingMicStartDelayMs
                 var settlePackets = 0
@@ -1590,7 +1590,9 @@ a=sendrecv
                         return@thread
                     }
             
-                    val timestamp = sequenceNumber * 160
+                    val sequenceNumber = rtpSequenceNumber.getAndIncrement()
+            
+                    val timestamp = rtpTimestampSamples.getAndAdd(160)
                     val sendCall = currentCall ?: call
                     val rtpHeader = listOf(
                         0x80,
@@ -1624,7 +1626,6 @@ a=sendrecv
                         }
                         return@thread
                     }
-                    sequenceNumber++
                     settlePackets++
                     Thread.sleep(20)
                 }
@@ -1736,7 +1737,8 @@ a=sendrecv
                         }
 
                         // Every 20 ms, at 8 kHz, we have 160 samples
-                        val timestamp = sequenceNumber * 160
+                        val sequenceNumber = rtpSequenceNumber.getAndIncrement()
+                        val timestamp = rtpTimestampSamples.getAndAdd(160)
                         val sendCall = currentCall ?: break
                         val rtpHeader = byteArrayOf(
                             0x80.toByte(),
@@ -1768,13 +1770,12 @@ a=sendrecv
                             Rlog.e(TAG, "Failed to send RTP packet #$sequenceNumber: ${e.message}", e)
                         }
 
-                        sequenceNumber++
                         realFrameCount++
                         bufPos += frameSize
                     }
                 }
             }
-            Rlog.d(TAG, "Encode thread exiting: callStopped=${callStopped.get()}, genMismatch=${callGeneration.get() != gen}, totalPacketsSent=$sequenceNumber")
+            Rlog.d(TAG, "Encode thread exiting: callStopped=${callStopped.get()}, genMismatch=${callGeneration.get() != gen}, totalPacketsSent=${rtpSequenceNumber.get()}")
             try { audioRecord.stop() } catch (t: Throwable) { Rlog.d(TAG, "AudioRecord stop failed during encode cleanup", t) }
             try { audioRecord.release() } catch (t: Throwable) { Rlog.d(TAG, "AudioRecord release failed during encode cleanup", t) }
             try { encoder.stop() } catch (t: Throwable) { Rlog.d(TAG, "Encoder stop failed during encode cleanup", t) }
@@ -2789,8 +2790,8 @@ a=sendrecv
             try {
                 // RFC 4733 telephone-event. Keep one RTP timestamp for the whole event,
                 // increase duration, and repeat the final packet with the E bit set.
-                val timestamp = (System.nanoTime() / 125000L).toInt()
-                val durationSamples = durationMs.coerceAtLeast(80) * 8
+                val timestamp = rtpTimestampSamples.get()
+                val durationSamples = durationMs.coerceAtLeast(160) * 8
                 val steps = listOf(
                     durationSamples / 4,
                     durationSamples / 2,
@@ -2799,7 +2800,7 @@ a=sendrecv
                     durationSamples,
                     durationSamples,
                 )
-                Rlog.d(TAG, "Sending RTP DTMF event=$event char=$c payload=${call.dtmfTrack} durationMs=$durationMs remote=${call.rtpRemoteAddr}:${call.rtpRemotePort}")
+                Rlog.d(TAG, "Sending RTP DTMF event=$event char=$c payload=${call.dtmfTrack} durationMs=$durationMs timestamp=$timestamp sequenceBase=${rtpSequenceNumber.get()} remote=${call.rtpRemoteAddr}:${call.rtpRemotePort}")
                 for ((index, duration) in steps.withIndex()) {
                     val sendCall = currentCall ?: return@thread
                     val sequenceNumber = rtpSequenceNumber.getAndIncrement()
@@ -2820,7 +2821,7 @@ a=sendrecv
                         (duration shr 8).toByte(), (duration and 0xff).toByte(),
                     )
                     val buf = rtpHeader + payload
-                    if (!sendRtpPacket(sendCall.rtpSocket, buf, sendCall.rtpRemoteAddr, sendCall.rtpRemotePort, "RTP DTMF event=$event char=$c seq=$sequenceNumber")) return@thread
+                    if (!sendRtpPacket(sendCall.rtpSocket, buf, sendCall.rtpRemoteAddr, sendCall.rtpRemotePort, "RTP DTMF event=$event char=$c seq=$sequenceNumber ts=$timestamp duration=$duration end=${end != 0}")) return@thread
                     Thread.sleep(20)
                 }
             } catch (t: Throwable) {
@@ -2835,6 +2836,7 @@ a=sendrecv
     val threadsStarted = AtomicBoolean(false)
     val callGeneration = AtomicInteger(0)
     private val rtpSequenceNumber = AtomicInteger(0)
+    private val rtpTimestampSamples = AtomicInteger(0)
 
     val prAckWaitLock = Object()
     var prAckWait = mutableSetOf<Int>()
