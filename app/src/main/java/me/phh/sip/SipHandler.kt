@@ -687,13 +687,23 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
                     val oldLocalAddr = if (this@SipHandler::localAddr.isInitialized) localAddr else null
                     val oldPcscfAddr = if (this@SipHandler::pcscfAddr.isInitialized) pcscfAddr else null
+                    val oldRegistrationTech = imsRegistrationTech
+                    val newRegistrationTech = detectRegistrationTech(linkProperties)
+
                     val networkChanged = network != _network
                     val localChanged = oldLocalAddr != null && newLocalAddr != null && oldLocalAddr != newLocalAddr
                     val pcscfChanged = oldPcscfAddr != null && newPcscfAddr != null && oldPcscfAddr != newPcscfAddr
+                    val techChanged = imsReady && oldRegistrationTech != newRegistrationTech
 
-                    if (networkChanged || localChanged || pcscfChanged) {
+                    if (networkChanged || localChanged || pcscfChanged || techChanged) {
                         reconnectIms(
-                            "IMS link changed networkChanged=$networkChanged oldLocal=$oldLocalAddr newLocal=$newLocalAddr oldPcscf=$oldPcscfAddr newPcscf=$newPcscfAddr",
+                            "IMS link changed networkChanged=$networkChanged " +
+                                "localChanged=$localChanged pcscfChanged=$pcscfChanged " +
+                                "techChanged=$techChanged oldLocal=$oldLocalAddr " +
+                                "newLocal=$newLocalAddr oldPcscf=$oldPcscfAddr " +
+                                "newPcscf=$newPcscfAddr oldTech=${registrationTechName(oldRegistrationTech)} " +
+                                "newTech=${registrationTechName(newRegistrationTech)} " +
+                                "interface=${linkProperties.interfaceName}",
                             _network
                         )
                     }
