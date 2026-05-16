@@ -73,6 +73,58 @@ class SipHandler(val ctxt: Context) {
     private val subId = activeSubscription.subscriptionId
 
     private val simInfoUri = Uri.parse("content://telephony/siminfo")
+    private fun normalizeOutgoingDialTargetForTelUri(rawPhoneNumber: String): String {
+        val stripped = PhoneNumberUtils.stripSeparators(rawPhoneNumber).trim()
+
+        if (stripped.isEmpty()) return stripped
+
+        // Keep MMI/USSD, post-dial sequences and carrier/service codes in their
+        // original form. They are not normal public E.164 dial targets.
+        if (stripped.any { it == '*' || it == '#' || it == ',' || it == ';' }) {
+            return stripped
+        }
+
+        // Already a global TEL URI target.
+        if (stripped.startsWith("+")) {
+            return stripped
+        }
+
+        // Android's framework can pass international-prefix form unchanged
+        // (for example 0049...). IMS cores behave more consistently with +E.164.
+        if (stripped.startsWith("00") &&
+            stripped.length > 2 &&
+            stripped.drop(2).all { it.isDigit() }) {
+            return "+" + stripped.drop(2)
+        }
+
+        // Only rewrite obvious national public numbers. Short codes like 110,
+        // 112, 116117, mailbox codes, etc. must keep their original form.
+        if (!stripped.all { it.isDigit() } || !stripped.startsWith("0")) {
+            return stripped
+        }
+
+        val countryIso = listOf(
+            activeSubscription.countryIso,
+            telephonyManager.simCountryIso,
+            telephonyManager.networkCountryIso,
+        ).firstOrNull { !it.isNullOrBlank() }
+
+        val e164 = countryIso?.let { iso ->
+            PhoneNumberUtils.formatNumberToE164(stripped, iso.uppercase())
+        }
+
+        if (e164 == null) {
+            Rlog.w(
+                TAG,
+                "Could not normalize outgoing dial target to E.164: " +
+                    "raw=$rawPhoneNumber stripped=$stripped countryIso=$countryIso",
+            )
+            return stripped
+        }
+
+        return e164
+    }
+
     @Volatile private var observedWfcEnabled: Boolean? = null
 private val wfcSubscriptionObserver = object : ContentObserver(myHandler) {
         override fun onChange(selfChange: Boolean) {
@@ -2298,7 +2350,7 @@ a=des:qos optional remote sendrecv
 a=sendrecv
                        """.trim().toByteArray()
 
-            val normalizedPhoneNumber = PhoneNumberUtils.stripSeparators(phoneNumber).trim()
+            val normalizedPhoneNumber = normalizeOutgoingDialTargetForTelUri(phoneNumber)
             val to = if (normalizedPhoneNumber.startsWith("+")) {
                 // Global TEL URIs must stand on their own. Adding phone-context to +E.164
                 // numbers makes some IMS cores drop the INVITE without any SIP response.
