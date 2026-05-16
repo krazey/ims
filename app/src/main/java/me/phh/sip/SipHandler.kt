@@ -82,7 +82,6 @@ class SipHandler(
     private val imsi = subTelephonyManager.subscriberId
 
     val isControlSocketUdp = carrierSettings.isControlSocketUdp
-    val forceSmsc = carrierSettings.forceSmsc
     val requireNonsessAka = carrierSettings.requireNonsessAka
 
     //private val realm = "ims.mnc$mnc.mcc$mcc.3gppnetwork.org"
@@ -175,7 +174,6 @@ private val smsHandler = SipSmsHandler(
         tag = TAG,
         ctxt = ctxt,
         subId = subId,
-        forceSmscProvider = { forceSmsc },
         realmProvider = { realm },
         commonHeadersProvider = { commonHeaders },
         mySipProvider = { mySip },

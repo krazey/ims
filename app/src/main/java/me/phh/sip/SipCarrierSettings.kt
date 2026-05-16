@@ -5,7 +5,6 @@ data class SipCarrierSettings(
     val mcc: String,
     val mnc: String,
     val isControlSocketUdp: Boolean,
-    val forceSmsc: String?,
     val requireNonsessAka: Boolean,
 ) {
     companion object {
@@ -21,10 +20,6 @@ data class SipCarrierSettings(
                     "450006" -> true // LG U+ can only do UDP
                     "208010" -> true // 20810 can do TCP and UDP. use this for testing
                     else -> false
-                },
-                forceSmsc = when (mccMnc) {
-                    "450006" -> "821080010585" // LG U+
-                    else -> null
                 },
                 // Sess is more secure so default to it.
                 requireNonsessAka = when (mccMnc) {
