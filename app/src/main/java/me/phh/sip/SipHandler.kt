@@ -326,36 +326,15 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         label: String,
         timeoutMs: Long = 10_000L,
     ) {
-        val finished = AtomicBoolean(false)
-        var failure: Throwable? = null
-        val connectThread = thread(name = "PhhImsSocketConnect-$label", isDaemon = true) {
-            try {
-                Rlog.d(TAG, "$label SIP socket connect start remote=$pcscfAddr:$remotePort")
-                connection.connect(remotePort)
-            } catch (t: Throwable) {
-                failure = t
-            } finally {
-                finished.set(true)
-            }
-        }
-
-        connectThread.join(timeoutMs)
-        if (!finished.get()) {
-            val reason = "$label SIP socket connect timed out after ${timeoutMs}ms to $pcscfAddr:$remotePort"
-            Rlog.w(TAG, reason)
-            try {
-                connection.close()
-            } catch (t: Throwable) {
-                Rlog.d(TAG, "close timed-out $label SIP socket failed", t)
-            }
-            connectThread.join(1000L)
-            throw SocketTimeoutException(reason)
-        }
-
-        failure?.let { throw it }
-        Rlog.d(TAG, "$label SIP socket connect completed remote=$pcscfAddr:$remotePort")
+        SipOperationWatchdog.connectSipSocket(
+            logTag = TAG,
+            connection = connection,
+            remoteAddress = pcscfAddr,
+            remotePort = remotePort,
+            label = label,
+            timeoutMs = timeoutMs,
+        )
     }
-
 
     private fun allocateSecurityParameterIndexWithWatchdog(
         label: String,
@@ -363,40 +342,14 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         requestedSpi: Int? = null,
         timeoutMs: Long = 10_000L,
     ): IpSecManager.SecurityParameterIndex {
-        val finished = AtomicBoolean(false)
-        var allocated: IpSecManager.SecurityParameterIndex? = null
-        var failure: Throwable? = null
-        val allocThread = thread(name = "PhhImsIpsecAllocate-$label", isDaemon = true) {
-            try {
-                Rlog.d(
-                    TAG,
-                    "$label allocation start address=$address" +
-                        if (requestedSpi != null) " requestedSpi=$requestedSpi" else "",
-                )
-                allocated = if (requestedSpi != null) {
-                    ipSecManager.allocateSecurityParameterIndex(address, requestedSpi)
-                } else {
-                    ipSecManager.allocateSecurityParameterIndex(address)
-                }
-            } catch (t: Throwable) {
-                failure = t
-            } finally {
-                finished.set(true)
-            }
-        }
-
-        allocThread.join(timeoutMs)
-        if (!finished.get()) {
-            val reason = "$label allocation timed out after ${timeoutMs}ms address=$address" +
-                if (requestedSpi != null) " requestedSpi=$requestedSpi" else ""
-            Rlog.w(TAG, reason)
-            throw SocketTimeoutException(reason)
-        }
-
-        failure?.let { throw it }
-        val result = allocated ?: throw SocketTimeoutException("$label allocation returned no SPI")
-        Rlog.d(TAG, "$label allocation completed spi=${result.spi}")
-        return result
+        return SipOperationWatchdog.allocateSecurityParameterIndex(
+            logTag = TAG,
+            ipSecManager = ipSecManager,
+            label = label,
+            address = address,
+            requestedSpi = requestedSpi,
+            timeoutMs = timeoutMs,
+        )
     }
 
     private fun closeIpsecResources(reason: String) {
