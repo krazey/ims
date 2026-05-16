@@ -7,7 +7,6 @@ import android.net.*
 import android.os.Handler
 import android.os.HandlerThread
 import android.telephony.Rlog
-import android.net.TelephonyNetworkSpecifier
 import android.telephony.TelephonyManager
 import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN
 import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_LTE
@@ -760,15 +759,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             scheduleImsNetworkRequestRestart("RAT not ready for IMS network request")
             return
         }
-        val imsNetworkRequest = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_IMS)
-            .setNetworkSpecifier(
-                TelephonyNetworkSpecifier.Builder()
-                    .setSubscriptionId(subId)
-                    .build()
-            )
-            .build()
+        val imsNetworkRequest = ImsNetworkRequestBuilder.buildForSubscription(subId)
 
         Rlog.d(TAG, "Built subscription-specific IMS network request $imsNetworkRequest")
 
