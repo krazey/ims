@@ -981,30 +981,10 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         // on failure just abort thread, ims will restart
         require(response.statusCode == 200)
 
-        val r =  Regex("lr;[^>]*")
-        val route =
-            (response.headers.getOrDefault("service-route", emptyList()) +
-                    response.headers.getOrDefault("path", emptyList()))
-                .toSet() // remove duplicates
-                .toList()
-                .map {
-                    r.replace(it, "lr")
-                }
-
-        val associatedUri =
-            response.headers["p-associated-uri"]!!
-                .flatMap { it.split(",") }
-                .map { it.trimStart('<').trimEnd('>').split(':') }
-        val preSip = associatedUri.first { it[0] == "sip" }[1]
-
-        mySip = "sip:" + preSip
-        myTel = associatedUri.firstOrNull { it[0] == "tel" }?.get(1) ?: preSip.split("@")[0]
-        commonHeaders +=
-            mapOf(
-                "route" to route,
-                "from" to listOf("<$mySip>"),
-                "to" to listOf("<$mySip>"),
-            )
+        val registeredIdentity = SipRegisterSuccessParser.parse(response)
+        mySip = registeredIdentity.mySip
+        myTel = registeredIdentity.myTel
+        commonHeaders += registeredIdentity.commonHeaders()
 
         subscribe()
 
