@@ -902,14 +902,11 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
 
         val writer = _writer ?: socket.gWriter()
 
-        fun secClient(alg: String, ealg: String) =
-            "ipsec-3gpp;prot=esp;mod=trans;spi-c=${ipsecSettings.clientSpiC.spi};spi-s=${ipsecSettings.clientSpiS.spi};port-c=${socket.gLocalPort()};port-s=${serverSocket.localPort};ealg=${ealg};alg=${alg}"
-
-        val algs = listOf("hmac-sha-1-96", "hmac-md5-96")
-        val ealgs = listOf("null", "aes-cbc")
-        val secClients = algs.flatMap { alg -> ealgs.map { ealg -> secClient(alg, ealg) }}
-        val secClientLine =
-            "Security-Client: ${secClients.joinToString(", ")}"
+        val secClientLine = SipSecurityClientHeader.build(
+            ipsecSettings = ipsecSettings,
+            clientPort = socket.gLocalPort(),
+            serverPort = serverSocket.localPort,
+        )
 
                     //P-Access-Network-Info: 3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=216302ee2003a107
         val msg =
