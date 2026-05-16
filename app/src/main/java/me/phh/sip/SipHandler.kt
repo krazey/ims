@@ -909,18 +909,15 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
 
     fun updateCommonHeaders(socket: SipConnection) {
         // Note: we are giving serverSocket (TCP) port, but TCP and UDP servers use the same port
-        val local = SipContactHeaders.localEndpoint(socket, serverSocket.localPort)
-        val sipInstance = SipContactHeaders.sipInstanceFromImei(imei)
-        val transport = SipContactHeaders.transport(socket)
-        contact = SipContactHeaders.mmtelContact(
-            userPart = imsi,
-            localEndpoint = local,
-            transport = transport,
-            sipInstance = sipInstance,
+        val update = SipCommonHeaderBuilder.build(
+            socket = socket,
+            serverPort = serverSocket.localPort,
+            imei = imei,
+            imsi = imsi,
         )
-        val newHeaders = SipContactHeaders.viaHeaders(socket, local)
-        registerHeaders += newHeaders
-        commonHeaders += newHeaders
+        contact = update.contact
+        registerHeaders += update.headers
+        commonHeaders += update.headers
     }
     fun register(_writer: OutputStream? = null) {
         RegistrationCellInfoLogger.log(TAG, subTelephonyManager)
