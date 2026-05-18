@@ -1754,7 +1754,20 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             // DANGER: Don't open the mic before the user acknowledged opening the call!
 
             val minBufferSize = AudioRecord.getMinBufferSize(8000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            val audioRecord = createVoiceCommunicationAudioRecord(minBufferSize)
+            if (minBufferSize <= 0) {
+                Rlog.e(TAG, "AudioRecord.getMinBufferSize failed: $minBufferSize")
+                try { encoder.stop() } catch (_: Throwable) { }
+                try { encoder.release() } catch (_: Throwable) { }
+                return@thread
+            }
+            val audioRecord = try {
+                createVoiceCommunicationAudioRecord(minBufferSize)
+            } catch (t: Throwable) {
+                Rlog.e(TAG, "AudioRecord creation failed with bufferSize=$minBufferSize", t)
+                try { encoder.stop() } catch (_: Throwable) { }
+                try { encoder.release() } catch (_: Throwable) { }
+                return@thread
+            }
             Rlog.d(TAG, "AudioRecord created with minBufferSize=$minBufferSize, state=${audioRecord.state}")
 
             // Pin capture to the built-in mic so the Samsung HAL cannot reroute it to
@@ -1773,7 +1786,15 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
 
             val prevAudioMode = audioManager.mode
             audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
-            audioRecord.startRecording()
+            try {
+                audioRecord.startRecording()
+            } catch (t: Throwable) {
+                Rlog.e(TAG, "AudioRecord.startRecording failed", t)
+                try { audioRecord.release() } catch (_: Throwable) { }
+                try { encoder.stop() } catch (_: Throwable) { }
+                try { encoder.release() } catch (_: Throwable) { }
+                return@thread
+            }
             Rlog.d(TAG, "AudioRecord started, state=${audioRecord.recordingState} audioMode=${audioManager.mode} (was $prevAudioMode) preferredDevice=${audioRecord.preferredDevice?.type}")
             Rlog.d(
                 TAG,
