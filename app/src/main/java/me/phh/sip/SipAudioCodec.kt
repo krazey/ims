@@ -178,6 +178,41 @@ internal object SipAudioCodecSdpLogger {
             }
             .minByOrNull { it.offeredOrder }
 
+    fun widebandDiagnosticSummary(sdp: List<String>): String {
+        val candidates = parseRemoteAudioCodecCandidates(sdp)
+        val amrWbCandidates = candidates.filter {
+            it.codec == SipAudioCodecs.AMR_WB.sdpCodecName &&
+                it.rate == SipAudioCodecs.AMR_WB.rtpClockRate
+        }
+        val amrNbCandidates = candidates.filter {
+            it.codec == SipAudioCodecs.AMR_NB.sdpCodecName &&
+                it.rate == SipAudioCodecs.AMR_NB.rtpClockRate
+        }
+        val telephoneEvent16000 = candidates.filter {
+            it.codec == "TELEPHONE-EVENT" &&
+                it.rate == SipAudioCodecs.AMR_WB.rtpClockRate
+        }.map { it.payload }
+        val telephoneEvent8000 = candidates.filter {
+            it.codec == "TELEPHONE-EVENT" &&
+                it.rate == SipAudioCodecs.AMR_NB.rtpClockRate
+        }.map { it.payload }
+
+        val hasBandwidthEfficientAmrWb = amrWbCandidates.any {
+            !it.fmtp.contains("octet-align=1", ignoreCase = true)
+        }
+        val amrWbOctetAlignOnly = amrWbCandidates.isNotEmpty() &&
+            amrWbCandidates.none {
+                !it.fmtp.contains("octet-align=1", ignoreCase = true)
+            }
+
+        return "amrWbPayloads=${amrWbCandidates.map { it.payload }} " +
+            "amrWbBandwidthEfficient=$hasBandwidthEfficientAmrWb " +
+            "amrWbOctetAlignOnly=$amrWbOctetAlignOnly " +
+            "telephoneEvent16000=$telephoneEvent16000 " +
+            "amrNbPayloads=${amrNbCandidates.map { it.payload }} " +
+            "telephoneEvent8000=$telephoneEvent8000"
+    }
+
     fun logRemoteAudioCodecCandidates(tag: String, context: String, sdp: List<String>) {
         val candidates = parseRemoteAudioCodecCandidates(sdp)
         if (candidates.isEmpty()) {
@@ -203,13 +238,15 @@ internal object SipAudioCodecSdpLogger {
 
         val bestWideband = bestKnownWidebandCandidate(sdp)
         val bestImplemented = bestCurrentlyImplementedCandidate(sdp)
+        val widebandDiagnostics = widebandDiagnosticSummary(sdp)
 
         Rlog.d(
             tag,
             "$context remote audio codec candidates futureRanked=$futureRanked " +
                 "implementedNowPayloads=$implementedNowPayloads " +
                 "bestWideband=${bestWideband?.let { describeRemoteAudioCodecCandidate(it) }} " +
-                "bestImplemented=${bestImplemented?.let { describeRemoteAudioCodecCandidate(it) }}",
+                "bestImplemented=${bestImplemented?.let { describeRemoteAudioCodecCandidate(it) }} " +
+                "widebandDiagnostics={$widebandDiagnostics}",
         )
     }
 }
