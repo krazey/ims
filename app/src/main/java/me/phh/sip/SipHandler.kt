@@ -2985,7 +2985,7 @@ a=sendrecv
                 // only decoded FT=7, which made calls silent whenever the network switched
                 // to a lower AMR mode such as FT=2.
                 val pt = dgramBuf[1].toUByte().toInt() and 0x7f
-                val amrFrame = amrNbFrameFromBandwidthEfficientRtp(dgramBuf, dgram.length)
+                val amrFrame = SipAmrRtpPayload.storageFrameFromBandwidthEfficientRtp(audioCodec, dgramBuf, dgram.length)
                 val ftForLog = amrFrame?.ft ?: 15
 
                 if (receivedCount <= 10 || receivedCount % 50 == 0) {
