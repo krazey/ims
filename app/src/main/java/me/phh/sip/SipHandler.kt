@@ -134,6 +134,44 @@ class SipHandler(
         return SipAudioCodecs.AMR_NB
     }
 
+    private fun selectOutgoingSpeechCodecFromAnswer(
+        sdp: List<String>,
+        context: String,
+    ): NegotiatedAudioCodec {
+        val candidates = SipAudioCodecSdpLogger.parseRemoteAudioCodecCandidates(sdp)
+        val amrWbCandidate = SipAudioCodecSdpLogger.bestKnownWidebandCandidate(sdp)
+        val amrNbCandidate = SipAudioCodecSdpLogger.bestCurrentlyImplementedCandidate(sdp)
+        val hasAmrWbTelephoneEvent = candidates.any {
+            it.codec == "TELEPHONE-EVENT" &&
+                it.rate == SipAudioCodecs.AMR_WB.rtpClockRate
+        }
+        val amrWbUsable =
+            amrWbCandidate != null &&
+                !amrWbCandidate.fmtp.contains("octet-align=1", ignoreCase = true) &&
+                hasAmrWbTelephoneEvent
+
+        if (amrWbUsable && amrWbMediaCodecAvailable) {
+            Rlog.w(
+                TAG,
+                "$context outgoing answer selected AMR-WB/16000 candidate=${SipAudioCodecSdpLogger.describeRemoteAudioCodecCandidate(amrWbCandidate!!)} " +
+                    "mediaCodecAvailable=$amrWbMediaCodecAvailable " +
+                    "hasTelephoneEvent16000=$hasAmrWbTelephoneEvent",
+            )
+            return SipAudioCodecs.AMR_WB
+        }
+
+        Rlog.d(
+            TAG,
+            "$context outgoing answer selected AMR-NB/8000 fallback " +
+                "amrWbCandidate=${amrWbCandidate?.let { SipAudioCodecSdpLogger.describeRemoteAudioCodecCandidate(it) }} " +
+                "amrWbUsable=$amrWbUsable " +
+                "mediaCodecAvailable=$amrWbMediaCodecAvailable " +
+                "hasTelephoneEvent16000=$hasAmrWbTelephoneEvent " +
+                "amrNbCandidate=${amrNbCandidate?.let { SipAudioCodecSdpLogger.describeRemoteAudioCodecCandidate(it) }}",
+        )
+        return SipAudioCodecs.AMR_NB
+    }
+
     private val imsUplinkGainQ8: Int by lazy {
         val persistGain = android.os.SystemProperties.getInt(
             UPLINK_GAIN_PERSIST_PROPERTY,
@@ -2471,11 +2509,26 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             // Connect later once the remote RTP address/port is known from SDP.
             Rlog.d(TAG, "RTP socket created for outgoing call: local=${rtpSocket.localAddress}:${rtpSocket.localPort} timeout=${rtpSocket.soTimeout}")
 
-            val amrTrack = 97
-            val amrTrackDesc = "fmtp:97 mode-change-capability=2;octet-align=0;max-red=0"
-            val dtmfTrack = 100
-            val dtmfTrackDesc = "fmtp:100 0-15"
-            val allTracks = listOf(amrTrack,dtmfTrack).sorted()
+            val amrNbTrack = 97
+            val amrWbTrack = 98
+            val dtmfNbTrack = 100
+            val dtmfWbTrack = 101
+            val offerAmrWb = amrWbMediaCodecAvailable
+            val allTracks = if (offerAmrWb) {
+                listOf(amrWbTrack, amrNbTrack, dtmfWbTrack, dtmfNbTrack)
+            } else {
+                listOf(amrNbTrack, dtmfNbTrack)
+            }
+            val offerBandwidthAs = if (offerAmrWb) {
+                sdpBandwidthAsKbps(SipAudioCodecs.AMR_WB)
+            } else {
+                sdpBandwidthAsKbps(SipAudioCodecs.AMR_NB)
+            }
+            Rlog.d(
+                TAG,
+                "Outgoing INVITE codec offer: offerAmrWb=$offerAmrWb " +
+                    "tracks=$allTracks bandwidthAs=$offerBandwidthAs",
+            )
 
             val ipType = if(localAddr is Inet6Address) "IP6" else "IP4"
 
@@ -2484,20 +2537,21 @@ v=0
 o=- 1 2 IN $ipType ${socket.gLocalAddr().hostAddress}
 s=phh voice call
 c=IN $ipType ${socket.gLocalAddr().hostAddress}
-b=AS:38
+b=AS:$offerBandwidthAs
 b=RS:0
 b=RR:0
 t=0 0
 m=audio ${rtpSocket.localPort} RTP/AVP ${allTracks.joinToString(" ")}
-b=AS:38
+b=AS:$offerBandwidthAs
 b=RS:0
 b=RR:0
 a=ptime:20
 a=maxptime:240
-a=rtpmap:$amrTrack AMR/8000/1
-a=rtpmap:$dtmfTrack telephone-event/8000
-a=fmtp:$amrTrack mode-change-capability=2;octet-align=0;max-red=0
-a=fmtp:$dtmfTrack 0-15
+${if (offerAmrWb) "a=rtpmap:$amrWbTrack AMR-WB/16000\r\na=fmtp:$amrWbTrack octet-align=0;mode-change-capability=2;max-red=0\r\na=rtpmap:$dtmfWbTrack telephone-event/16000\r\na=fmtp:$dtmfWbTrack 0-15" else ""}
+a=rtpmap:$amrNbTrack AMR/8000/1
+a=fmtp:$amrNbTrack mode-change-capability=2;octet-align=0;max-red=0
+a=rtpmap:$dtmfNbTrack telephone-event/8000
+a=fmtp:$dtmfNbTrack 0-15
 a=curr:qos local none
 a=curr:qos remote none
 a=des:qos optional local sendrecv
@@ -2787,11 +2841,82 @@ a=sendrecv
                 if (!isSdp) return@setResponseCallback false
 
                 val respSdp = resp.body.toString(Charsets.UTF_8).split("[\r\n]+".toRegex()).toList()
+                SipAudioCodecSdpLogger.logRemoteAudioCodecCandidates(
+                    tag = TAG,
+                    context = "outgoing SDP response ${resp.statusCode} callId=${resp.callIdOrEmpty()}",
+                    sdp = respSdp,
+                )
 
                 fun sdpElement(command: String): String? {
                     val v = respSdp.firstOrNull { it.startsWith("$command=")} ?: return null
                     return v.substring(2)
                 }
+
+                val respAttributes = respSdp
+                    .filter { it.startsWith("a=") }
+                    .map { it.substring(2) }
+                fun responseTrackRequirements(track: Int): String? =
+                    respAttributes.firstOrNull { it.startsWith("fmtp:$track") }
+
+                fun lookResponseTrackMatching(codec: String, notAdditional: String = ""): Pair<Int, String>? {
+                    val offeredPayloads = sdpElement("m")
+                        ?.trim()
+                        ?.split("\\s+".toRegex())
+                        ?.drop(3)
+                        ?.mapNotNull { it.toIntOrNull() }
+                        ?.toSet()
+                        .orEmpty()
+                    val maps = respAttributes.filter { it.startsWith("rtpmap:") && it.contains(codec) }
+                    val matches = maps.mapNotNull { m ->
+                        val track = m.split("[: ]+".toRegex()).getOrNull(1)?.toIntOrNull()
+                        if (track != null && offeredPayloads.contains(track)) Pair(track, m) else null
+                    }
+                    val sorted = matches.sortedBy { m ->
+                        val fmtp = responseTrackRequirements(m.first).orEmpty()
+                        when {
+                            fmtp.contains("octet-align=1", ignoreCase = true) &&
+                                notAdditional.isNotEmpty() &&
+                                fmtp.contains(notAdditional, ignoreCase = true) -> 100
+                            fmtp.contains("octet-align=1", ignoreCase = true) -> 100
+                            else -> 0
+                        }
+                    }
+                    Rlog.d(TAG, "Outgoing answer matching $codec offered=$offeredPayloads got=$sorted")
+                    return sorted.firstOrNull()
+                }
+
+                val selectedAudioCodec = selectOutgoingSpeechCodecFromAnswer(
+                    sdp = respSdp,
+                    context = "outgoing SDP response ${resp.statusCode} callId=${resp.callIdOrEmpty()}",
+                )
+                val selectedAmr = lookResponseTrackMatching(
+                    speechCodecRtpmapName(selectedAudioCodec),
+                    notAdditional = "octet-align=1",
+                )
+                if (selectedAmr == null) {
+                    Rlog.w(
+                        TAG,
+                        "Outgoing SDP response lacks compatible ${speechCodecRtpmapName(selectedAudioCodec)}; " +
+                            "falling back to AMR-NB/8000 tracks",
+                    )
+                }
+                val selectedDtmf = lookResponseTrackMatching(
+                    telephoneEventRtpmapName(selectedAudioCodec),
+                )
+                if (selectedDtmf == null) {
+                    Rlog.w(
+                        TAG,
+                        "Outgoing SDP response lacks compatible ${telephoneEventRtpmapName(selectedAudioCodec)}; " +
+                            "falling back to telephone-event/8000",
+                    )
+                }
+                val dialogAudioCodec =
+                    if (selectedAmr != null && selectedDtmf != null) selectedAudioCodec else SipAudioCodecs.AMR_NB
+                val (dialogAmrTrack, dialogAmrTrackDesc) =
+                    selectedAmr?.takeIf { selectedDtmf != null } ?: (amrNbTrack to "rtpmap:$amrNbTrack AMR/8000/1")
+                val (dialogDtmfTrack, dialogDtmfTrackDesc) =
+                    selectedDtmf?.takeIf { selectedAmr != null } ?: (dtmfNbTrack to "rtpmap:$dtmfNbTrack telephone-event/8000")
+
                 val rtpRemotePort = sdpElement("m")!!.split(" ")[1]
                 val rtpRemoteAddr = InetAddress.getByName(sdpElement("c")!!.split(" ")[2])
                 val rtpRemotePortInt = rtpRemotePort.toInt()
@@ -2811,11 +2936,11 @@ a=sendrecv
                 )
                 currentCall = Call(
                     outgoing = true,
-                    audioCodec = SipAudioCodecs.AMR_NB,
-                    amrTrack = amrTrack,
-                    amrTrackDesc = amrTrackDesc,
-                    dtmfTrack = dtmfTrack,
-                    dtmfTrackDesc = dtmfTrackDesc,
+                    audioCodec = dialogAudioCodec,
+                    amrTrack = dialogAmrTrack,
+                    amrTrackDesc = dialogAmrTrackDesc,
+                    dtmfTrack = dialogDtmfTrack,
+                    dtmfTrackDesc = dialogDtmfTrackDesc,
                     // Update from/to/call-id based on the response we got to include the remote tag.
                     // Keep the response Record-Route too; later local BYE/UPDATE must use it as Route.
                     callHeaders = myHeaders - "require" - "content-type" +
@@ -2838,7 +2963,14 @@ a=sendrecv
                     resp.statusCode in 180..199 -> "early"
                     else -> "sdp"
                 }
-                Rlog.d(TAG, "Outgoing $outgoingDialogPhase dialog SDP: status=${resp.statusCode} cseq=$responseCseq remoteTarget=${currentCall?.remoteContact} nextLocalCseq=${currentCall?.localCseq?.get()} route=${currentCall?.callHeaders?.get("route")}")
+                Rlog.d(
+                    TAG,
+                    "Outgoing $outgoingDialogPhase dialog SDP: status=${resp.statusCode} cseq=$responseCseq " +
+                        "codec=${currentCall?.audioCodec?.name}/${currentCall?.audioCodec?.sampleRate} " +
+                        "amrTrack=${currentCall?.amrTrack} dtmfTrack=${currentCall?.dtmfTrack} " +
+                        "remoteTarget=${currentCall?.remoteContact} nextLocalCseq=${currentCall?.localCseq?.get()} " +
+                        "route=${currentCall?.callHeaders?.get("route")}",
+                )
 
                 if (responseCseq.contains("INVITE") && (resp.statusCode == 200 || resp.statusCode == 202)) {
                     val finalInviteCallId = resp.callIdOrEmpty()
