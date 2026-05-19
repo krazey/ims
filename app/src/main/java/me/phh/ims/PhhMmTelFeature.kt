@@ -287,6 +287,19 @@ class PhhMmTelFeature(
             private val mCallId = randomBytes(12).toHex()
             lateinit var mListener: ImsCallSessionListener
             var mState = State.INITIATED
+            var currentCallProfile: ImsCallProfile = profile
+
+            override fun getCallProfile(): ImsCallProfile {
+                return currentCallProfile
+            }
+
+            override fun getLocalCallProfile(): ImsCallProfile {
+                return currentCallProfile
+            }
+
+            override fun getRemoteCallProfile(): ImsCallProfile {
+                return currentCallProfile
+            }
             override fun getCallId(): String {
                 return mCallId
             }
@@ -367,10 +380,13 @@ class PhhMmTelFeature(
                 }
             }
         }.also { session ->
-            sipHandler.onOutgoingCallConnected = { _: Object, _: Map<String, String> ->
+            sipHandler.onOutgoingCallConnected = { _: Object, extras: Map<String, String> ->
                 Rlog.d(TAG, "Outgoing call connected")
                 session.mState = ImsCallSessionImplBase.State.ESTABLISHED
-                val callProfile = makeVoiceCallProfile()
+                val callProfile = makeVoiceCallProfile(
+                    audioQuality = audioQualityFromSipExtras(extras),
+                )
+                session.currentCallProfile = callProfile
                 session.mListener.callSessionInitiated(callProfile)
             }
         }
@@ -429,6 +445,22 @@ class PhhMmTelFeature(
         }
 
         return callProfile
+    }
+
+    private fun audioQualityFromSipExtras(extras: Map<*, *>): Int {
+        val codec = extras["audio-codec"] as? String
+        val rate = (extras["audio-codec-rate"] as? String)?.toIntOrNull()
+        val quality = when (codec) {
+            "AMR-WB" -> ImsStreamMediaProfile.AUDIO_QUALITY_AMR_WB
+            else -> ImsStreamMediaProfile.AUDIO_QUALITY_AMR
+        }
+
+        Rlog.d(
+            TAG,
+            "Mapping SIP codec to framework audio quality: " +
+                "codec=$codec rate=$rate quality=$quality",
+        )
+        return quality
     }
 
     private fun cancelledReasonInfo(map: Map<*, *>): ImsReasonInfo {
@@ -508,9 +540,9 @@ sipHandler.imsFailureCallback = {
         sipHandler.onIncomingCall = { handle: Object, from: String, extras: Map<String, String> -> 
             val callerNumber = from.trim()
             val callProfile = makeVoiceCallProfile(
-                callerNumber,
-                ImsStreamMediaProfile.AUDIO_QUALITY_EVS_FB,
-            )
+            callerNumber,
+            audioQualityFromSipExtras(extras),
+        )
             val incomingSession = object: ImsCallSessionImplBase() {
                 var mState = State.IDLE
                 override fun getCallProfile(): ImsCallProfile {

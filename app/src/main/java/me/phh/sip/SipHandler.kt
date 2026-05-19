@@ -96,6 +96,12 @@ class SipHandler(
     private fun sdpBandwidthAsKbps(audioCodec: NegotiatedAudioCodec): Int =
         if (audioCodec == SipAudioCodecs.AMR_WB) 88 else 38
 
+    private fun audioCodecExtras(audioCodec: NegotiatedAudioCodec): Map<String, String> =
+        mapOf(
+            "audio-codec" to audioCodec.name,
+            "audio-codec-rate" to audioCodec.sampleRate.toString(),
+        )
+
     private fun selectIncomingSpeechCodecFromOffer(
         sdp: List<String>,
         context: String,
@@ -1373,7 +1379,10 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 Rlog.d(TAG, "Incoming media threads already started before final ACK")
             }
 
-            onIncomingCallConnected?.invoke(Object(), mapOf("call-id" to callId))
+            onIncomingCallConnected?.invoke(
+                Object(),
+                mapOf("call-id" to callId) + audioCodecExtras(call.audioCodec),
+            )
 
             if (incomingHangupAfterAck.getAndSet(false)) {
                 Rlog.d(TAG, "ACK received after local pre-ACK hangup; sending deferred BYE")
@@ -2088,7 +2097,8 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         Rlog.d(TAG, "Outgoing call connected after remote RTP: callId=$callId reason=$reason")
         onOutgoingCallConnected?.invoke(
             Object(),
-            mapOf("call-id" to callId, "connectedReason" to reason)
+            mapOf("call-id" to callId, "connectedReason" to reason) +
+                audioCodecExtras(call.audioCodec),
         )
     }
 
@@ -3677,7 +3687,11 @@ a=sendrecv
                 try { rtpSocket.close() } catch (t: Throwable) { Rlog.d(TAG, "Closing aborted incoming RTP socket failed", t) }
                 return@thread
             }
-            onIncomingCall?.invoke(Object(), m, mapOf("call-id" to incomingCallId))
+            onIncomingCall?.invoke(
+                Object(),
+                m,
+                mapOf("call-id" to incomingCallId) + audioCodecExtras(selectedAudioCodec),
+            )
 
                         Rlog.d(TAG, "Deferring incoming media threads until final ACK")
 
