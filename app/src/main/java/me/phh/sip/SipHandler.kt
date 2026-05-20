@@ -372,6 +372,8 @@ private val smsHandler = SipSmsHandler(
         null
     var onOutgoingCallConnected: ((handle: Object, extras: Map<String, String>) -> Unit)? =
         null
+    var onOutgoingCallProgressing: ((handle: Object, extras: Map<String, String>) -> Unit)? =
+        null
     var onIncomingCallConnected: ((handle: Object, extras: Map<String, String>) -> Unit)? =
         null
     var onCancelledCall: ((handle: Object, from: String, extras: Map<String, String>) -> Unit)? =
@@ -2797,6 +2799,30 @@ a=sendrecv
                     }
                 } else {
                     Rlog.d(TAG, "Invite got status ${resp.statusCode} = ${resp.statusString}")
+                    if (resp.statusCode in 180..199) {
+                        val progressCseq = resp.headers["cseq"]?.getOrNull(0).orEmpty()
+                        val progressHasSdp = resp.headers["content-type"]?.getOrNull(0)
+                            ?.equals("application/sdp", ignoreCase = true) == true
+
+                        if (progressCseq.contains("INVITE", ignoreCase = true) && !progressHasSdp) {
+                            Rlog.d(
+                                TAG,
+                                "Outgoing call progressing without SDP: " +
+                                    "status=${resp.statusCode} ${resp.statusString} cseq=$progressCseq",
+                            )
+                            onOutgoingCallProgressing?.invoke(
+                                Object(),
+                                mapOf(
+                                    "call-id" to resp.callIdOrEmpty(),
+                                    "statusCode" to resp.statusCode.toString(),
+                                    "statusString" to resp.statusString,
+                                    "cseq" to progressCseq,
+                                    "local-ringback" to "true",
+                                ),
+                            )
+                        }
+                    }
+
                     if(resp.statusCode >= 400) {
                         val failedCallId = resp.callIdOrEmpty()
                         val failedCseq = resp.headers["cseq"]?.getOrNull(0).orEmpty()
