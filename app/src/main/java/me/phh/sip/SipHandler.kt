@@ -262,8 +262,10 @@ class SipHandler(
     //private val realm = "ims.mnc$mnc.mcc$mcc.3gppnetwork.org"
     private val realm = "ims.mnc$mnc.mcc$mcc.3gppnetwork.org"
     private val user = "$imsi@$realm"
-    private var akaDigest =
+    private var akaDigest = ""
+    private fun initialRegisterAuthorization(): String =
         """Digest username="$user",realm="$realm",nonce="",uri="sip:$realm",response="",algorithm=AKAv1-MD5"""
+
 
     fun generateCallId(): SipHeadersMap = SipCallIdGenerator.generate()
 
@@ -586,11 +588,14 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
 
     private fun resetRegistrationStateForConnect() {
         registerCounter = 1
+        akaDigest = initialRegisterAuthorization()
+        val registerCallId = generateCallId()
+        val registerFromTag = registerCallId["call-id"]!!.first().take(12)
         registerHeaders =
             """
-        From: <sip:$user>
+        From: <sip:$user>;tag=$registerFromTag
         To: <sip:$user>
-        """.toSipHeadersMap() + generateCallId()
+        """.toSipHeadersMap() + registerCallId
         commonHeaders = "".toSipHeadersMap()
         contact = ""
         mySip = ""
