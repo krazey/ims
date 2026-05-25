@@ -256,6 +256,16 @@ class SipHandler(
     private val mnc = carrierSettings.mnc
     private val imsi = subTelephonyManager.subscriberId
 
+    private fun outgoingInviteAccessNetworkInfoHeaders(): SipHeadersMap {
+        val normalizedMnc = mnc.trimStart('0')
+        if (mcc != "260" || normalizedMnc != "2") {
+            return "".toSipHeadersMap()
+        }
+        return """
+            P-Access-Network-Info: 3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=20810b8c49752501
+            """.toSipHeadersMap()
+    }
+
     val isControlSocketUdp = carrierSettings.isControlSocketUdp
     val requireNonsessAka = carrierSettings.requireNonsessAka
 
@@ -2879,7 +2889,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                     Accept-Contact: *;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
                     P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel
                     Contact: $contactTel
-                    """.toSipHeadersMap() + generateCallId() - "p-asserted-identity"
+                    """.toSipHeadersMap() + outgoingInviteAccessNetworkInfoHeaders() + generateCallId() - "p-asserted-identity"
             // P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel
             // Accept-Contact: *;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
             val msg =
