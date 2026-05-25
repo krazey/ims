@@ -2750,6 +2750,11 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             if (pendingOutgoing != null && pendingOutgoing.callId == call.callIdOrNull()) {
                 Rlog.w(TAG, "Local hangup before outgoing INVITE final answer; sending CANCEL callId=${pendingOutgoing.callId}")
                 sendCancelForPendingOutgoingInvite(pendingOutgoing, "local hangup before final INVITE answer")
+                clearPendingOutgoingInvite(
+                    pendingOutgoing.callId,
+                    closeRtpSocket = true,
+                    reason = "local CANCEL for pending outgoing INVITE",
+                )
                 currentCall = null
                 onCancelledCall?.invoke(Object(), "", mapOf("call-id" to pendingOutgoing.callId))
                 return
