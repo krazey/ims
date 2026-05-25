@@ -33,6 +33,15 @@ object SipRegisterRequestBuilder {
                 ""
             }
 
+        // TEMP SingTel REGISTER PVNI test.
+        // Keep the current clean matrix and add the common IMS visited-network header.
+        val singtelPvniLine =
+            if (realm == "ims.mnc001.mcc525.3gppnetwork.org") {
+                "P-Visited-Network-ID: ims.mnc001.mcc525.3gppnetwork.org"
+            } else {
+                ""
+            }
+
         return SipRequest(
             SipMethod.REGISTER,
             "sip:$realm",
@@ -43,6 +52,7 @@ object SipRegisterRequestBuilder {
                 Cseq: $registerCounter REGISTER
                 Contact: $contact
                 $singtelPaniLine
+                $singtelPvniLine
                 Supported: path, gruu, sec-agree
                 Allow: INVITE, ACK, CANCEL, BYE, UPDATE, REFER, NOTIFY, MESSAGE, PRACK, OPTIONS
                 Authorization: $akaDigest
