@@ -258,10 +258,16 @@ class SipHandler(
 
     private fun outgoingInviteTargetUri(normalizedPhoneNumber: String): String {
         if (isSingTel()) {
-            return if (normalizedPhoneNumber.startsWith("+")) {
-                "sip:$normalizedPhoneNumber@${singtelServiceRealm()};user=phone"
+            val singtelInviteNumber = when {
+                normalizedPhoneNumber.startsWith("+") -> normalizedPhoneNumber
+                normalizedPhoneNumber.startsWith("65") && normalizedPhoneNumber.length == 10 -> "+$normalizedPhoneNumber"
+                normalizedPhoneNumber.length == 8 -> "+65$normalizedPhoneNumber"
+                else -> normalizedPhoneNumber
+            }
+            return if (singtelInviteNumber.startsWith("+")) {
+                "sip:$singtelInviteNumber@${singtelServiceRealm()};user=phone"
             } else {
-                "sip:$normalizedPhoneNumber;phone-context=${singtelServiceRealm()}@${singtelServiceRealm()};user=phone"
+                "sip:$singtelInviteNumber;phone-context=${singtelServiceRealm()}@${singtelServiceRealm()};user=phone"
             }
         }
 
