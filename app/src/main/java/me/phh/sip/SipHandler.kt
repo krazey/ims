@@ -3008,9 +3008,15 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 } else {
                     mySip
                 }
-            val outgoingContactUserPhoneParam = if (isSingTel()) ";user=phone" else ""
+            val outgoingContactUser = if (isSingTel()) imsi else myTel
+            val outgoingContactFeatures =
+                if (isSingTel()) {
+                    """audio;+g.3gpp.accesstype="cellular";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.smsip"""
+                } else {
+                    """+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.smsip;audio"""
+                }
             val contactTel =
-                """<sip:$myTel@$local;transport=$transport$outgoingContactUserPhoneParam>;expires=7200;+sip.instance="$sipInstance";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.smsip;audio"""
+                """<sip:$outgoingContactUser@$local;transport=$transport>;expires=7200;+sip.instance="$sipInstance";$outgoingContactFeatures"""
             val myHeaders = commonHeaders +
                 """
                     From: <$outgoingIdentitySip>
