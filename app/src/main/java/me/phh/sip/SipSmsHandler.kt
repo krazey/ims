@@ -206,6 +206,25 @@ internal class SipSmsHandler(
         return 200
     }
 
+        private fun outgoingSmsRequestUriForRealm(
+            smscSipIdentity: String?,
+            dest: String,
+            realm: String,
+        ): String {
+            val fallback = smscSipIdentity ?: "sip:$realm"
+            if (!realm.equals("ims.singtel.com", ignoreCase = true)) {
+                return fallback
+            }
+
+            return if (dest.startsWith("sip:", ignoreCase = true) &&
+                dest.substringAfter("sip:", "").contains("@")
+            ) {
+                dest
+            } else {
+                fallback
+            }
+        }
+
     fun sendSms(
         smsSmsc: String?,
         pdu: ByteArray,
@@ -249,8 +268,8 @@ internal class SipSmsHandler(
         Rlog.d(tag, "sending sms ${data.toHex()} to smsc $smsc rpSmsc=$rpSmsc")
 
         val smscSipIdentity = smscIdentity?.toString()?.let { normalizeSipTarget(it) }
-        val requestUri = smscSipIdentity ?: "sip:$realm"
         val dest = smscSipIdentity ?: smsc?.let { "sip:+$it@$realm" } ?: "sip:$realm"
+        val requestUri = outgoingSmsRequestUriForRealm(smscSipIdentity, dest, realm)
 
         val msg = SipRequest(
             SipMethod.MESSAGE,
