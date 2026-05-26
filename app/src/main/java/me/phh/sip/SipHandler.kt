@@ -304,7 +304,7 @@ class SipHandler(
                 normalizedPhoneNumber.length == 8 -> "+65$normalizedPhoneNumber"
                 else -> normalizedPhoneNumber
             }
-            return "sip:$singtelInviteNumber@${singtelServiceRealm()};user=phone"
+            return "sip:$singtelInviteNumber@${singtelServiceRealm()}"
         }
 
         return if (normalizedPhoneNumber.startsWith("+")) {
