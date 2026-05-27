@@ -2124,6 +2124,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         val headers: SipHeadersMap,
         val rtpSocket: DatagramSocket,
         val cancelSent: AtomicBoolean = AtomicBoolean(false),
+        val createdAtMs: Long = System.currentTimeMillis(),
     )
 
     // AMR-NB speech payload sizes in bits for FT 0..8.
@@ -4039,17 +4040,46 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             return 486
         }
 
-        val pendingOutgoingCallId = pendingOutgoingInvite?.callId
+        val pendingOutgoing = pendingOutgoingInvite
+        val pendingOutgoingCallId = pendingOutgoing?.callId
         if (pendingOutgoingCallId != null && pendingOutgoingCallId != incomingCallId) {
             val incomingCseq = request.headers["cseq"]?.getOrNull(0).orEmpty()
-            Rlog.w(
-                TAG,
-                "Rejecting incoming INVITE while outgoing INVITE is pending: " +
-                    "callId=$incomingCallId cseq=$incomingCseq " +
-                    "pendingOutgoingCallId=$pendingOutgoingCallId"
-            )
-            rememberTerminatedIncomingCall(incomingCallId, "outgoing pending reject")
-            return 486
+            val pendingOutgoingAgeMs = pendingOutgoing?.let {
+                System.currentTimeMillis() - it.createdAtMs
+            } ?: 0L
+            if (isSingTel() && pendingOutgoingAgeMs >= 15000L) {
+                Rlog.w(
+                    TAG,
+                    "incoming INVITE supersedes stale SingTel outgoing INVITE: " +
+                        "callId=$incomingCallId cseq=$incomingCseq " +
+                        "pendingOutgoingCallId=$pendingOutgoingCallId ageMs=$pendingOutgoingAgeMs",
+                )
+                stopCallRuntime("incoming INVITE supersedes stale SingTel outgoing INVITE")
+                clearPendingOutgoingInvite(
+                    pendingOutgoingCallId,
+                    closeRtpSocket = true,
+                    reason = "incoming INVITE supersedes stale SingTel outgoing INVITE",
+                )
+                onCancelledCall?.invoke(
+                    Object(),
+                    "",
+                    mapOf(
+                        "call-id" to pendingOutgoingCallId,
+                        "statusCode" to "480",
+                        "statusString" to "Outgoing INVITE superseded by incoming call",
+                        "singtelBlackholedOutgoingSuperseded" to "true",
+                    )
+                )
+            } else {
+                Rlog.w(
+                    TAG,
+                    "Rejecting incoming INVITE while outgoing INVITE is pending: " +
+                        "callId=$incomingCallId cseq=$incomingCseq " +
+                        "pendingOutgoingCallId=$pendingOutgoingCallId ageMs=$pendingOutgoingAgeMs"
+                )
+                rememberTerminatedIncomingCall(incomingCallId, "outgoing pending reject")
+                return 486
+            }
         }
 
         callStopped.set(false)
