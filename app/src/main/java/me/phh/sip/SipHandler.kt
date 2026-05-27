@@ -3048,7 +3048,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                "a=fmtp:$amrNbTrack mode-change-capability=2;octet-align=0;max-red=0",
                "a=rtpmap:$dtmfNbTrack telephone-event/8000",
                "a=fmtp:$dtmfNbTrack 0-15",
-               "a=curr:qos local none",
+               "a=curr:qos local none", // SingTel outgoing SDP preconditions
                "a=curr:qos remote none",
                "a=des:qos optional local sendrecv",
                "a=des:qos optional remote sendrecv",
@@ -3112,6 +3112,9 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                     Contact: $contactTel
                     """.toSipHeadersMap() + generateCallId() - "p-asserted-identity"
             val inviteHeaders = if (isSingTel()) {
+                // SingTel INVITE require precondition: SDP now advertises QoS
+                // preconditions, so the SIP capability headers must advertise
+                // and require the precondition extension as well.
                 // direct stock-like SingTel INVITE: whitelist only the dynamic
                 // dialog/security headers, then add the originating MMTEL header
                 // shape explicitly. This avoids carrying stale experiment headers
@@ -3133,9 +3136,9 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
 
                 singtelDynamicInviteHeaders +
                     """
-                    Require: sec-agree
+                    Require: sec-agree, precondition
                     Proxy-Require: sec-agree
-                    Supported: 100rel, timer, sec-agree, replaces
+                    Supported: 100rel, timer, sec-agree, precondition, replaces
                     Allow: INVITE, ACK, CANCEL, BYE, UPDATE, REFER, NOTIFY, MESSAGE, PRACK, OPTIONS
                     Accept-Contact: *;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
                     Content-Type: application/sdp
