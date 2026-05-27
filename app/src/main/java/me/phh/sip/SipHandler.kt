@@ -3109,6 +3109,15 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                     P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel
                     Contact: $contactTel
                     """.toSipHeadersMap() + generateCallId() - "p-asserted-identity"
+            val singtelInvitePaniHeader =
+                if (isSingTel()) {
+                    commonHeaders["p-access-network-info"]
+                        ?.firstOrNull()
+                        ?.let { "P-Access-Network-Info: $it" }
+                        ?: "P-Access-Network-Info: 3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=20810b8c49752501"
+                } else {
+                    ""
+                }
             val inviteHeaders = if (isSingTel()) {
                 // SingTel INVITE require precondition: SDP now advertises QoS
                 // preconditions, so the SIP capability headers must advertise
@@ -3137,6 +3146,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                     """
                     Require: sec-agree, precondition
                     Proxy-Require: sec-agree
+                    $singtelInvitePaniHeader
                     Supported: 100rel, timer, sec-agree, precondition, replaces
                     Allow: INVITE, ACK, CANCEL, BYE, UPDATE, REFER, NOTIFY, MESSAGE, PRACK, OPTIONS
                     Accept-Contact: *;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
