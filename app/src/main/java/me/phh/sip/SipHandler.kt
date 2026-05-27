@@ -3056,11 +3056,9 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
            )
            val outgoingSdpLines = if (isSingTel()) {
                sdpLines
-                   .filterNot { line ->
-                       line.startsWith("a=curr:qos", ignoreCase = true) ||
-                           line.startsWith("a=des:qos", ignoreCase = true) ||
-                           line.startsWith("a=conf:qos", ignoreCase = true)
-                   }
+                   // keep SingTel outgoing SDP precondition attributes; the SIP
+                   // headers advertise Require/Supported: precondition, so the
+                   // SDP must keep a=curr/a=des instead of filtering them out.
                    .map { line -> normalizeSingTelOutgoingSdpLine(line) }
            } else {
                sdpLines
