@@ -1011,6 +1011,19 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             is ImsNetworkEndpointResolution.Success -> {
                 localAddr = endpoint.localAddr
                 pcscfAddr = endpoint.pcscfAddr
+
+                // use preferred SingTel P-CSCF after endpoint resolution; resolveEndpoint()
+                // can still pick the raw first P-CSCF before our carrier-specific ordering.
+                if (isSingTel()) {
+                    val preferredPcscfAddr = getPcscfServers(lp).firstOrNull()
+                    if (preferredPcscfAddr != null && preferredPcscfAddr != pcscfAddr) {
+                        Rlog.d(
+                            TAG,
+                            "SingTel connect P-CSCF override: endpoint=$pcscfAddr preferred=$preferredPcscfAddr",
+                        )
+                        pcscfAddr = preferredPcscfAddr
+                    }
+                }
             }
 
             ImsNetworkEndpointResolution.WaitingForPcscf -> {
