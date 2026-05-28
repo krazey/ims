@@ -3144,6 +3144,10 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 // SingTel full MMTEL accept/allow profile: match the voice-side
                 // capability headers seen from SingTel INVITEs more closely.
                 // Keep the already-proven route/Via/PANI/precondition baseline.
+                // SingTel INVITE no Sec-Agree retest: REGISTER still uses
+                // sec-agree, but originating voice INVITE is tested without
+                // Security-Verify/Proxy-Require/sec-agree on the corrected
+                // route/Via/PANI/precondition baseline.
                 // direct stock-like SingTel INVITE: whitelist only the dynamic
                 // dialog/security headers, then add the originating MMTEL header
                 // shape explicitly. This avoids carrying stale experiment headers
@@ -3162,7 +3166,6 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                         "user-agent",
                         "route",
                         "call-id",
-                        "security-verify",
                         "p-access-network-info",
                         "p-preferred-identity",
                     )
@@ -3182,10 +3185,9 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                         """.toSipHeadersMap()
                 singtelDynamicInviteHeaders +
                     """
-                    Require: sec-agree, precondition
-                    Proxy-Require: sec-agree
+                    Require: precondition
                     $singtelInvitePaniHeader
-                    Supported: 100rel, timer, sec-agree, precondition, replaces
+                    Supported: 100rel, timer, precondition, replaces
                     Allow: REGISTER, REFER, NOTIFY, SUBSCRIBE, UPDATE, INFO, MESSAGE, PRACK, INVITE, ACK, OPTIONS, CANCEL, BYE
                     Accept-Contact: *;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
                     Content-Type: application/sdp
