@@ -546,6 +546,20 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         return keepCallback
     }
 
+    private val IWLAN_CONVERGENCE_OUTGOING_CALL_GUARD_MS = 60_000L
+
+    private fun isWaitingForIwlanAfterWfcPreferenceChange(): Boolean {
+        if (!wfcSubscriptionSettingMonitor.isWifiPreferredOrOnly()) {
+            return false
+        }
+        if (imsRegistrationTech != REGISTRATION_TECH_LTE) {
+            return false
+        }
+
+        val elapsedMs = SystemClock.uptimeMillis() - wfcSubscriptionSettingMonitor.lastChangeUptimeMs()
+        return elapsedMs in 0L..IWLAN_CONVERGENCE_OUTGOING_CALL_GUARD_MS
+    }
+
     fun isReadyForOutgoingCall(): Boolean {
         val ready =
             imsReady &&
@@ -561,6 +575,16 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
                     "networkInitialized=${this::network.isInitialized} " +
                     "socketInitialized=${this::socket.isInitialized}",
             )
+        }
+
+        if (ready && isWaitingForIwlanAfterWfcPreferenceChange()) {
+            val elapsedMs = SystemClock.uptimeMillis() - wfcSubscriptionSettingMonitor.lastChangeUptimeMs()
+            Rlog.w(
+                TAG,
+                "Rejecting outgoing call while waiting for IWLAN IMS after WFC preference/subscription change: " +
+                    "tech=${registrationTechName(imsRegistrationTech)} elapsedMs=$elapsedMs",
+            )
+            return false
         }
 
         return ready
