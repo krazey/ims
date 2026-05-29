@@ -14,6 +14,7 @@ import android.telephony.TelephonyManager
 import android.telephony.ims.ImsCallProfile
 import android.telephony.ims.ImsCallSessionListener
 import android.telephony.ims.ImsReasonInfo
+import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN
 import android.telephony.ims.ImsStreamMediaProfile
 import android.telephony.ims.feature.ImsFeature
 import android.telephony.ims.stub.ImsCallSessionImplBase
@@ -287,7 +288,7 @@ class PhhMmTelFeature(
             private val mCallId = randomBytes(12).toHex()
             lateinit var mListener: ImsCallSessionListener
             var mState = State.INITIATED
-            var currentCallProfile: ImsCallProfile = profile
+            var currentCallProfile: ImsCallProfile = applyCallNetworkType(profile, "session initial profile")
 
             override fun getCallProfile(): ImsCallProfile {
                 return currentCallProfile
@@ -454,6 +455,27 @@ class PhhMmTelFeature(
             )
         }
 
+        return applyCallNetworkType(callProfile, "voice profile")
+    }
+
+    private fun currentImsCallNetworkType(): Int {
+        val registrationTech = getSipHandlerOrNull()?.getRegistrationTech()
+        return when (registrationTech) {
+            REGISTRATION_TECH_IWLAN -> TelephonyManager.NETWORK_TYPE_IWLAN
+            REGISTRATION_TECH_LTE -> TelephonyManager.NETWORK_TYPE_LTE
+            else -> TelephonyManager.NETWORK_TYPE_UNKNOWN
+        }
+    }
+
+    private fun applyCallNetworkType(callProfile: ImsCallProfile, reason: String): ImsCallProfile {
+        val registrationTech = getSipHandlerOrNull()?.getRegistrationTech()
+        val networkType = currentImsCallNetworkType()
+        callProfile.setCallExtraInt(ImsCallProfile.EXTRA_CALL_NETWORK_TYPE, networkType)
+        Rlog.d(
+            TAG,
+            "Applying IMS call network type: reason=$reason " +
+                "registrationTech=$registrationTech networkType=$networkType",
+        )
         return callProfile
     }
 
