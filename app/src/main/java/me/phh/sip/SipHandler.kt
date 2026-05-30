@@ -3022,6 +3022,66 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
      */
 
     var respInFlight: SipResponse? = null
+
+    /*
+     * SingTel outgoing INVITE handling.
+     *
+     * SingTel accepts registration and IMS SMS, but silently drops oversized
+     * protected originating MMTEL INVITEs before 100 Trying on the LTE IMS path.
+     * Keep the special request shape scoped to SingTel.
+     */
+    private fun isSingTelStockOutgoingCarrier(): Boolean =
+        (mcc == "525" && (mnc == "001" || mnc == "01")) ||
+            realm.equals("ims.mnc001.mcc525.3gppnetwork.org", ignoreCase = true) ||
+            registerTargetRealm.equals("ims.singtel.com", ignoreCase = true)
+
+    private fun singtelStockLocalNumberForPhoneContext(number: String): String {
+        val digits = number.trim().trimStart('+')
+        return if (digits.startsWith("65") && digits.length == 10) {
+            digits.substring(2)
+        } else {
+            digits
+        }
+    }
+
+    private fun singtelStockPhoneContextSipUri(number: String): String =
+        "sip:${singtelStockLocalNumberForPhoneContext(number)};phone-context=ims.singtel.com@ims.singtel.com;user=phone"
+
+    private fun singtelPublicSipUri(number: String): String {
+        val digits = singtelStockLocalNumberForPhoneContext(number)
+        val e164 = if (digits.startsWith("+") || digits.startsWith("65")) {
+            if (digits.startsWith("+")) digits else "+$digits"
+        } else {
+            "+65$digits"
+        }
+        return "sip:$e164@ims.singtel.com"
+    }
+
+    private fun normalizeSingTelStockOutgoingSdpLine(line: String): String {
+        val wbRtpmap = if (
+            line.startsWith("a=rtpmap:", ignoreCase = true) &&
+                line.contains("AMR-WB/16000/1", ignoreCase = true)
+        ) {
+            line.replace("AMR-WB/16000/1", "AMR-WB/16000")
+        } else {
+            line
+        }
+
+        val normalizedFmtp = Regex(
+            "^a=fmtp:(\\d+)\\s+.*mode-change-capability=2.*$",
+            RegexOption.IGNORE_CASE,
+        ).matchEntire(wbRtpmap)?.let { match ->
+            "a=fmtp:${match.groupValues[1]} max-red=0; mode-change-capability=2; octet-align=0"
+        } ?: wbRtpmap
+
+        return if (normalizedFmtp.equals("a=maxptime:240", ignoreCase = true)) {
+            "a=maxptime:40"
+        } else {
+            normalizedFmtp
+        }
+    }
+
+
     fun call(phoneNumber: String) {
         thread {
             callStopped.set(false)
@@ -3112,7 +3172,42 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             * outgoing INVITE SDP body to end with a final CRLF after the last
             * SDP line, not only CRLF between lines.
             */
-           val sdp = (sdpLines.joinToString("\r\n") + "\r\n").toByteArray(Charsets.US_ASCII)
+           val finalOutgoingSdpLines = if (isSingTelStockOutgoingCarrier()) {
+               sdpLines.map { line -> normalizeSingTelStockOutgoingSdpLine(line) }
+           } else {
+               sdpLines
+           }
+           val sdp = (finalOutgoingSdpLines.joinToString("\r\n") + "\r\n").toByteArray(Charsets.US_ASCII)
+           /*
+            * Keep the initial SingTel SDP offer compact enough to stay below the
+            * carrier path's practical protected-request size limit. The normal
+            * multi-codec/precondition offer is valid SIP/SDP, but is too large
+            * for this path and gets dropped before any SIP response.
+            */
+           val singtelCompactInitialSdp = listOf(
+               "v=0",
+               "o=- 1 2 IN $ipType ${socket.gLocalAddr().hostAddress}",
+               "s=-",
+               "c=IN $ipType ${socket.gLocalAddr().hostAddress}",
+               "t=0 0",
+               "m=audio ${rtpSocket.localPort} RTP/AVP $amrNbTrack",
+               "a=rtpmap:$amrNbTrack AMR/8000",
+               "a=fmtp:$amrNbTrack octet-align=0",
+               "a=ptime:20",
+               "a=sendrecv",
+           ).joinToString("\r\n")
+               .plus("\r\n")
+               .toByteArray(Charsets.US_ASCII)
+           /*
+            * SingTel requires a compact originating request. Use public SIP URI
+            * addressing and a compact initial SDP offer below instead of the
+            * generic TEL-URI/full-offer shape.
+            */
+           val outgoingInviteBody = if (isSingTelStockOutgoingCarrier()) {
+               singtelCompactInitialSdp
+           } else {
+               sdp
+           }
 
             val normalizedPhoneNumber = normalizeOutgoingDialTargetForTelUri(phoneNumber)
             val to = if (normalizedPhoneNumber.startsWith("+")) {
@@ -3155,12 +3250,73 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                     """.toSipHeadersMap() + generateCallId() - "p-asserted-identity"
             // P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel
             // Accept-Contact: *;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
+            val singtelStockOutgoingTargetUri = if (isSingTelStockOutgoingCarrier()) {
+                singtelPublicSipUri(normalizedPhoneNumber)
+            } else {
+                to
+            }
+
+            val singtelStockOutgoingHeaders = if (isSingTelStockOutgoingCarrier()) {
+                val singtelStockIdentity = singtelPublicSipUri(myTel)
+                val singtelStockFromTag = myHeaders["from"]?.firstOrNull()
+                    ?.substringAfter(";tag=", missingDelimiterValue = "")
+                    ?.substringBefore(";")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "phh${System.currentTimeMillis().toString(16)}"
+                val singtelStockContact = "<sip:$imsi@$local;transport=$transport>;expires=7200;" +
+                    "+sip.instance=\"$sipInstance\";audio;+g.3gpp.accesstype=\"cellular\";" +
+                    "+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel\";+g.3gpp.smsip"
+                val singtelCompactContact = "<sip:$imsi@$local;transport=$transport>"
+                val singtelStockPaniValue = commonHeaders.entries
+                    .firstOrNull { it.key.equals("p-access-network-info", ignoreCase = true) }
+                    ?.value
+                    ?.firstOrNull()
+                    ?: "3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=5250102C6B611D01"
+
+                val singtelStockBaseHeaders = myHeaders.filterKeys { key ->
+                    key.equals("via", ignoreCase = true) ||
+                        key.equals("max-forwards", ignoreCase = true) ||
+                        key.equals("user-agent", ignoreCase = true) ||
+                        key.equals("route", ignoreCase = true) ||
+                        key.equals("call-id", ignoreCase = true) ||
+                        key.equals("security-verify", ignoreCase = true) ||
+                        key.equals("proxy-require", ignoreCase = true)
+                }
+
+                // Direct stock-like SingTel INVITE: whitelist only the dynamic dialog and
+                // security headers, then add the originating MMTEL shape explicitly. Do not
+                // carry the generic TEL-URI identity headers from main.
+                /*
+                 * Keep the originating SingTel header set intentionally small.
+                 * Security-Verify and Content-Type are required/accepted, but
+                 * optional identity/access/capability headers make the first
+                 * protected INVITE large enough to be dropped by this IMS path.
+                 */
+                singtelStockBaseHeaders + """
+                    From: <$singtelStockIdentity>;tag=$singtelStockFromTag
+                    To: <$singtelStockOutgoingTargetUri>
+                    Contact: $singtelCompactContact
+                    P-Preferred-Identity: <$singtelStockIdentity>
+                    Expires: 7200
+                    Require: sec-agree
+                    Proxy-Require: sec-agree
+                    Content-Type: application/sdp
+                    Allow: INVITE, ACK, CANCEL, BYE, OPTIONS
+                    Supported: sec-agree
+                    Request-Disposition: no-fork
+                    P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel
+                    CSeq: 1 INVITE
+                """.toSipHeadersMap()
+            } else {
+                myHeaders
+            }
+
             val msg =
                 SipRequest(
                     SipMethod.INVITE,
-                    to,
-                    myHeaders,
-                    sdp
+                    singtelStockOutgoingTargetUri,
+                    singtelStockOutgoingHeaders,
+                    outgoingInviteBody
                 )
             val outgoingInviteCallId = msg.headers["call-id"]!![0]
             val outgoingInviteCseq = msg.headers["cseq"]?.getOrNull(0)
@@ -3170,10 +3326,10 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             val outgoingDialogNextCseq = AtomicInteger(outgoingInviteCseq + 1)
             pendingOutgoingInvite = PendingOutgoingInvite(
                 callId = outgoingInviteCallId,
-                destination = to,
+                destination = singtelStockOutgoingTargetUri,
                 headers = msg.headers,
                 rtpSocket = rtpSocket,
-                body = sdp,
+                body = outgoingInviteBody,
             )
             val prackedReliableProvisionals = mutableSetOf<String>()
             setResponseCallback(outgoingInviteCallId) { r: SipResponse ->
