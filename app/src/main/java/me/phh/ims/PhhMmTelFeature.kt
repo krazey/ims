@@ -691,7 +691,19 @@ sipHandler.imsFailureCallback = {
     }
 
     override fun shouldProcessCall(numbers: Array<out String>): Int {
-        Rlog.d(TAG, "Should process call? ${numbers.toList()}")
-        return PROCESS_CALL_IMS
+        Rlog.d(TAG, "Should process call? ${numbers.contentToString()}")
+
+        val csfbNumber = numbers.firstOrNull { number ->
+            this::sipHandler.isInitialized &&
+                sipHandler.shouldForceCsfbForOutgoingDialString(number)
+        }
+        if (csfbNumber != null) {
+            Rlog.w(
+                TAG,
+                "Forcing CSFB for outgoing MMI/service-code-like dial target: $csfbNumber",
+            )
+            return 1 /* PROCESS_CALL_CSFB */
+        }
+        return 0 /* PROCESS_CALL_IMS */
     }
 }

@@ -598,6 +598,34 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
 
     fun handlesSubscription(candidateSubId: Int): Boolean = subId == candidateSubId
 
+    fun shouldForceCsfbForOutgoingDialString(number: String): Boolean {
+        val normalizedNumber = normalizeOutgoingDialTargetForTelUri(number)
+        val hasMmiControlChars =
+            number.any { it == '*' || it == '#' } ||
+                normalizedNumber.any { it == '*' || it == '#' }
+
+        if (hasMmiControlChars) {
+            Rlog.w(
+                TAG,
+                "Forcing CSFB for MMI/service-code dial target: " +
+                    "raw=$number normalized=$normalizedNumber",
+            )
+            return true
+        }
+
+        val normalizedMnc = mnc.trimStart('0').ifBlank { "0" }
+        val isDreiAt = mcc == "232" && normalizedMnc == "5"
+        if (isDreiAt && normalizedNumber == "333") {
+            Rlog.w(
+                TAG,
+                "Forcing CSFB for 3 AT service code that reached IMS stripped: " +
+                    "raw=$number normalized=$normalizedNumber",
+            )
+            return true
+        }
+        return false
+    }
+
     private fun markImsReady(reason: String) {
         if (imsReady) return
         Rlog.d(TAG, "IMS registration ready: $reason")
