@@ -270,6 +270,26 @@ class SipHandler(
         """Digest username="$user",realm="$realm",nonce="",uri="sip:$realm",response="",algorithm=AKAv1-MD5"""
     fun generateCallId(): SipHeadersMap = SipCallIdGenerator.generate()
 
+    /*
+     * Write and flush a complete SIP frame to the socket writer.
+     *
+     * Keep logging the byte count and first line so carrier-specific transaction
+     * failures can be correlated with the exact request/response sent.
+     */
+    private fun writeSipBytesWithFlush(
+        writer: java.io.OutputStream,
+        label: String,
+        bytes: ByteArray,
+    ) {
+        val firstLine = bytes.toString(Charsets.US_ASCII).lineSequence().firstOrNull().orEmpty()
+        synchronized(writer) {
+            writer.write(bytes)
+            writer.flush()
+        }
+        Rlog.d(TAG, "SIP write complete label=$label bytes=${bytes.size} firstLine=$firstLine")
+    }
+
+
     private var registerCounter = 1
     private var registerHeaders =
         """
@@ -1726,7 +1746,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         )
         setResponseCallback(msg.headers["call-id"]!![0], ::subscribeCallback)
         Rlog.d(TAG, "Sending $msg")
-        synchronized(socket.gWriter()) { socket.gWriter().write(msg.toByteArray()) }
+        writeSipBytesWithFlush(socket.gWriter(), "SipHandler msg", msg.toByteArray())
     }
 
     fun subscribeCallback(response: SipResponse): Boolean {
@@ -2788,7 +2808,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                     """.toSipHeadersMap()
             )
         Rlog.d(TAG, "Sending $msg")
-        synchronized(socket.gWriter()) { socket.gWriter().write(msg.toByteArray()) }
+        writeSipBytesWithFlush(socket.gWriter(), "SipHandler msg", msg.toByteArray())
     }
 
     fun rejectCall() {
@@ -2811,7 +2831,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 )
             val responseWriter = call.incomingResponseWriter ?: dispatcher.writerForCallId(rejectedCallId) ?: socket.gWriter()
             Rlog.d(TAG, "Sending $msg via incomingResponseWriter=${call.incomingResponseWriter != null}")
-            synchronized(responseWriter) { responseWriter.write(msg.toByteArray()) }
+            writeSipBytesWithFlush(responseWriter, "SipHandler msg", msg.toByteArray())
 
             stopCallRuntime("call cleanup")
             incomingFinalResponseSent.set(false)
@@ -2887,7 +2907,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             headersParam = cancelHeaders,
         )
         Rlog.d(TAG, "Sending CANCEL for pending outgoing INVITE callId=${pending.callId} reason=$reason $cancel")
-        synchronized(socket.gWriter()) { socket.gWriter().write(cancel.toByteArray()) }
+        writeSipBytesWithFlush(socket.gWriter(), "SipHandler cancel", cancel.toByteArray())
 
         /*
          * Clear stale pending outgoing INVITE immediately after local CANCEL.
@@ -2912,7 +2932,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             headersParam = byeHeaders
         )
         Rlog.d(TAG, "Sending BYE $bye")
-        synchronized(socket.gWriter()) { socket.gWriter().write(bye.toByteArray()) }
+        writeSipBytesWithFlush(socket.gWriter(), "SipHandler bye", bye.toByteArray())
     }
 
     fun terminateCall() {
@@ -3864,7 +3884,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                                 newSdp
                             )
                         Rlog.d(TAG, "Sending $msg2")
-                        synchronized(socket.gWriter()) { socket.gWriter().write(msg2.toByteArray()) }
+                        writeSipBytesWithFlush(socket.gWriter(), "SipHandler msg2", msg2.toByteArray())
                     }
 
                     return@setResponseCallback false
@@ -3881,7 +3901,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 false // Return true when we want to stop receiving messages for that call
             }
             Rlog.d(TAG, "Sending $msg")
-            synchronized(socket.gWriter()) { socket.gWriter().write(msg.toByteArray()) }
+            writeSipBytesWithFlush(socket.gWriter(), "SipHandler msg", msg.toByteArray())
         }
     }
 
@@ -4659,7 +4679,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                         body = mySdp
                     )
                 Rlog.d(TAG, "Sending reliable incoming 183 for precondition offer: $msg")
-                synchronized(incomingResponseWriter) { incomingResponseWriter.write(msg.toByteArray()) }
+                writeSipBytesWithFlush(incomingResponseWriter, "SipHandler msg", msg.toByteArray())
                 waitPrack(mySeqCounter)
             } else {
                 val myHeaders2 = myHeaders - "rseq" - "content-type" - "require" - "p-access-network-info" +

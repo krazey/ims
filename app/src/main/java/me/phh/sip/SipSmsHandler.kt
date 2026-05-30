@@ -208,6 +208,26 @@ internal class SipSmsHandler(
         return 200
     }
 
+
+    /*
+     * Write and flush a complete IMS SMS SIP frame to the socket writer.
+     *
+     * Keep logging the byte count and first line so carrier-specific MESSAGE
+     * failures can be correlated with the exact request/response sent.
+     */
+    private fun writeSmsSipBytesWithFlush(
+        writer: java.io.OutputStream,
+        label: String,
+        bytes: ByteArray,
+    ) {
+        val firstLine = bytes.toString(Charsets.US_ASCII).lineSequence().firstOrNull().orEmpty()
+        synchronized(writer) {
+            writer.write(bytes)
+            writer.flush()
+        }
+        Rlog.d(tag, "SIP SMS write complete label=$label bytes=${bytes.size} firstLine=$firstLine")
+    }
+
     fun sendSms(
         smsSmsc: String?,
         pdu: ByteArray,
@@ -394,9 +414,7 @@ internal class SipSmsHandler(
 
         Rlog.d(tag, "Sending $msg")
         val writer = writerProvider()
-        synchronized(writer) {
-            writer.write(msg.toByteArray())
-        }
+        writeSmsSipBytesWithFlush(writer, "SipSmsHandler msg ref=$ref requestUri=$requestUri dest=$dest", msg.toByteArray())
     }
 
     fun sendSmsAck(token: Int, ref: Int, error: Boolean) {
@@ -431,9 +449,7 @@ internal class SipSmsHandler(
 
         Rlog.d(tag, "Sending $msg")
         val writer = writerProvider()
-        synchronized(writer) {
-            writer.write(msg.toByteArray())
-        }
+        writeSmsSipBytesWithFlush(writer, "SipSmsHandler ack ref=$ref", msg.toByteArray())
     }
 
     private fun normalizeSipTarget(raw: String): String =
