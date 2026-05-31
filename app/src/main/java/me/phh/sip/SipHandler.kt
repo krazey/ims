@@ -62,122 +62,7 @@ class SipHandler(
         )
 
     private val amrWbMediaCodecAvailable: Boolean by lazy {
-        isMediaCodecAvailableFor(SipAudioCodecs.AMR_WB)
-    }
-
-    private fun isMediaCodecAvailableFor(audioCodec: NegotiatedAudioCodec): Boolean {
-        var encoder: MediaCodec? = null
-        var decoder: MediaCodec? = null
-        return try {
-            encoder = MediaCodec.createEncoderByType(audioCodec.mimeType)
-            decoder = MediaCodec.createDecoderByType(audioCodec.mimeType)
-            Rlog.d(TAG, "MediaCodec available for ${audioCodec.name}: mime=${audioCodec.mimeType}")
-            true
-        } catch (t: Throwable) {
-            Rlog.w(TAG, "MediaCodec unavailable for ${audioCodec.name}: mime=${audioCodec.mimeType}", t)
-            false
-        } finally {
-            try { encoder?.release() } catch (_: Throwable) { }
-            try { decoder?.release() } catch (_: Throwable) { }
-        }
-    }
-
-    private fun speechCodecRtpmapName(audioCodec: NegotiatedAudioCodec): String =
-        "${audioCodec.sdpCodecName}/${audioCodec.rtpClockRate}"
-
-    private fun telephoneEventRtpmapName(audioCodec: NegotiatedAudioCodec): String =
-        "telephone-event/${audioCodec.rtpClockRate}"
-
-    private fun defaultSpeechFmtpAnswer(track: Int, audioCodec: NegotiatedAudioCodec): String =
-        if (audioCodec == SipAudioCodecs.AMR_WB) {
-            "fmtp:$track octet-align=0;mode-change-capability=2;max-red=0"
-        } else {
-            "fmtp:$track mode-set=7;octet-align=0;max-red=0"
-        }
-
-    private fun sdpBandwidthAsKbps(audioCodec: NegotiatedAudioCodec): Int =
-        if (audioCodec == SipAudioCodecs.AMR_WB) 88 else 38
-
-    private fun audioCodecExtras(audioCodec: NegotiatedAudioCodec): Map<String, String> =
-        mapOf(
-            "audio-codec" to audioCodec.name,
-            "audio-codec-rate" to audioCodec.sampleRate.toString(),
-        )
-
-    private fun selectIncomingSpeechCodecFromOffer(
-        sdp: List<String>,
-        context: String,
-    ): NegotiatedAudioCodec {
-        val candidates = SipAudioCodecSdpLogger.parseRemoteAudioCodecCandidates(sdp)
-        val amrWbCandidate = SipAudioCodecSdpLogger.bestKnownWidebandCandidate(sdp)
-        val amrNbCandidate = SipAudioCodecSdpLogger.bestCurrentlyImplementedCandidate(sdp)
-        val hasAmrWbTelephoneEvent = candidates.any {
-            it.codec == "TELEPHONE-EVENT" &&
-                it.rate == SipAudioCodecs.AMR_WB.rtpClockRate
-        }
-        val amrWbUsable =
-            amrWbCandidate != null &&
-                !amrWbCandidate.fmtp.contains("octet-align=1", ignoreCase = true) &&
-                hasAmrWbTelephoneEvent
-
-        if (amrWbUsable && amrWbMediaCodecAvailable) {
-            Rlog.w(
-                TAG,
-                "$context selecting AMR-WB/16000 candidate=${SipAudioCodecSdpLogger.describeRemoteAudioCodecCandidate(amrWbCandidate!!)} " +
-                    "mediaCodecAvailable=$amrWbMediaCodecAvailable " +
-                    "hasTelephoneEvent16000=$hasAmrWbTelephoneEvent",
-            )
-            return SipAudioCodecs.AMR_WB
-        }
-
-        Rlog.d(
-            TAG,
-            "$context selecting AMR-NB/8000 fallback " +
-                "amrWbCandidate=${amrWbCandidate?.let { SipAudioCodecSdpLogger.describeRemoteAudioCodecCandidate(it) }} " +
-                "amrWbUsable=$amrWbUsable " +
-                "mediaCodecAvailable=$amrWbMediaCodecAvailable " +
-                "hasTelephoneEvent16000=$hasAmrWbTelephoneEvent " +
-                "amrNbCandidate=${amrNbCandidate?.let { SipAudioCodecSdpLogger.describeRemoteAudioCodecCandidate(it) }}",
-        )
-        return SipAudioCodecs.AMR_NB
-    }
-
-    private fun selectOutgoingSpeechCodecFromAnswer(
-        sdp: List<String>,
-        context: String,
-    ): NegotiatedAudioCodec {
-        val candidates = SipAudioCodecSdpLogger.parseRemoteAudioCodecCandidates(sdp)
-        val amrWbCandidate = SipAudioCodecSdpLogger.bestKnownWidebandCandidate(sdp)
-        val amrNbCandidate = SipAudioCodecSdpLogger.bestCurrentlyImplementedCandidate(sdp)
-        val hasAmrWbTelephoneEvent = candidates.any {
-            it.codec == "TELEPHONE-EVENT" &&
-                it.rate == SipAudioCodecs.AMR_WB.rtpClockRate
-        }
-        val amrWbUsable =
-            amrWbCandidate != null &&
-                !amrWbCandidate.fmtp.contains("octet-align=1", ignoreCase = true) &&
-                hasAmrWbTelephoneEvent
-
-        if (amrWbUsable && amrWbMediaCodecAvailable) {
-            Rlog.w(
-                TAG,
-                "$context outgoing answer selected AMR-WB/16000 candidate=${SipAudioCodecSdpLogger.describeRemoteAudioCodecCandidate(amrWbCandidate!!)} " +
-                    "mediaCodecAvailable=$amrWbMediaCodecAvailable " +
-                    "hasTelephoneEvent16000=$hasAmrWbTelephoneEvent",
-            )
-            return SipAudioCodecs.AMR_WB
-        }
-
-        Rlog.d(
-            TAG,
-            "$context outgoing answer selected AMR-NB/8000 fallback " +
-                "amrWbCandidate=${amrWbCandidate?.let { SipAudioCodecSdpLogger.describeRemoteAudioCodecCandidate(it) }} " +
-                "amrWbUsable=$amrWbUsable " +
-                "mediaCodecAvailable=$amrWbMediaCodecAvailable " +
-                "hasTelephoneEvent16000=$hasAmrWbTelephoneEvent " +
-                "amrNbCandidate=${amrNbCandidate?.let { SipAudioCodecSdpLogger.describeRemoteAudioCodecCandidate(it) }}",
-        )
-        return SipAudioCodecs.AMR_NB
+        SipAudioCodecNegotiator.isMediaCodecAvailableFor(TAG, SipAudioCodecs.AMR_WB)
     }
 
     private val imsUplinkGainQ8: Int by lazy {
@@ -1920,7 +1805,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
 
             onIncomingCallConnected?.invoke(
                 Object(),
-                mapOf("call-id" to callId) + audioCodecExtras(call.audioCodec),
+                mapOf("call-id" to callId) + SipAudioCodecNegotiator.audioCodecExtras(call.audioCodec),
             )
 
             if (incomingHangupAfterAck.getAndSet(false)) {
@@ -2059,18 +1944,18 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         // put telephone-event before AMR-WB, e.g. m=audio ... 96 104, which some
         // IMS cores reject as an offer/answer error during precondition UPDATE.
         val selectedAudioCodec = call.audioCodec
-        val amr = lookTrackMatching(speechCodecRtpmapName(selectedAudioCodec), notAdditional = "octet-align=1")
+        val amr = lookTrackMatching(SipAudioCodecNegotiator.speechCodecRtpmapName(selectedAudioCodec), notAdditional = "octet-align=1")
         if (amr == null) {
-            Rlog.w(TAG, "Rejecting UPDATE: no compatible ${speechCodecRtpmapName(selectedAudioCodec)} payload in offer callId=$requestCallId offered=$offeredPayloads")
+            Rlog.w(TAG, "Rejecting UPDATE: no compatible ${SipAudioCodecNegotiator.speechCodecRtpmapName(selectedAudioCodec)} payload in offer callId=$requestCallId offered=$offeredPayloads")
             return 488
         }
         val (amrTrack, amrTrackDesc) = amr
         val amrFmtpAnswer = trackRequirements(amrTrack)
-            ?: defaultSpeechFmtpAnswer(amrTrack, selectedAudioCodec)
+            ?: SipAudioCodecNegotiator.defaultSpeechFmtpAnswer(amrTrack, selectedAudioCodec)
 
-        val dtmf = lookTrackMatching(telephoneEventRtpmapName(selectedAudioCodec))
+        val dtmf = lookTrackMatching(SipAudioCodecNegotiator.telephoneEventRtpmapName(selectedAudioCodec))
         if (dtmf == null) {
-            Rlog.w(TAG, "Rejecting UPDATE: no compatible ${telephoneEventRtpmapName(selectedAudioCodec)} payload in offer callId=$requestCallId offered=$offeredPayloads")
+            Rlog.w(TAG, "Rejecting UPDATE: no compatible ${SipAudioCodecNegotiator.telephoneEventRtpmapName(selectedAudioCodec)} payload in offer callId=$requestCallId offered=$offeredPayloads")
             return 488
         }
         val (dtmfTrack, dtmfTrackDesc) = dtmf
@@ -2095,7 +1980,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         val owner = request.destination.substringAfter("sip:").substringBefore("@").ifBlank { "-" }
         val sdpVersion = call.localSdpVersion.incrementAndGet()
         val remoteMaxptime = attributes.firstOrNull { it.startsWith("maxptime:") } ?: "maxptime:240"
-        val sdpBandwidthAs = sdpBandwidthAsKbps(selectedAudioCodec)
+        val sdpBandwidthAs = SipAudioCodecNegotiator.sdpBandwidthAsKbps(selectedAudioCodec)
 
         val answerSdpLines = listOf(
             "v=0",
@@ -2685,7 +2570,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         onOutgoingCallConnected?.invoke(
             Object(),
             mapOf("call-id" to callId, "connectedReason" to reason) +
-                audioCodecExtras(call.audioCodec),
+                SipAudioCodecNegotiator.audioCodecExtras(call.audioCodec),
         )
     }
 
@@ -3283,9 +3168,9 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 listOf(amrNbTrack, dtmfNbTrack)
             }
             val offerBandwidthAs = if (offerAmrWb) {
-                sdpBandwidthAsKbps(SipAudioCodecs.AMR_WB)
+                SipAudioCodecNegotiator.sdpBandwidthAsKbps(SipAudioCodecs.AMR_WB)
             } else {
-                sdpBandwidthAsKbps(SipAudioCodecs.AMR_NB)
+                SipAudioCodecNegotiator.sdpBandwidthAsKbps(SipAudioCodecs.AMR_NB)
             }
             Rlog.d(
                 TAG,
@@ -3792,28 +3677,30 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                     return sorted.firstOrNull()
                 }
 
-                val selectedAudioCodec = selectOutgoingSpeechCodecFromAnswer(
+                val selectedAudioCodec = SipAudioCodecNegotiator.selectOutgoingSpeechCodecFromAnswer(
+                    logTag = TAG,
                     sdp = respSdp,
                     context = "outgoing SDP response ${resp.statusCode} callId=${resp.callIdOrEmpty()}",
+                    amrWbMediaCodecAvailable = amrWbMediaCodecAvailable,
                 )
                 val selectedAmr = lookResponseTrackMatching(
-                    speechCodecRtpmapName(selectedAudioCodec),
+                    SipAudioCodecNegotiator.speechCodecRtpmapName(selectedAudioCodec),
                     notAdditional = "octet-align=1",
                 )
                 if (selectedAmr == null) {
                     Rlog.w(
                         TAG,
-                        "Outgoing SDP response lacks compatible ${speechCodecRtpmapName(selectedAudioCodec)}; " +
+                        "Outgoing SDP response lacks compatible ${SipAudioCodecNegotiator.speechCodecRtpmapName(selectedAudioCodec)}; " +
                             "falling back to AMR-NB/8000 tracks",
                     )
                 }
                 val selectedDtmf = lookResponseTrackMatching(
-                    telephoneEventRtpmapName(selectedAudioCodec),
+                    SipAudioCodecNegotiator.telephoneEventRtpmapName(selectedAudioCodec),
                 )
                 if (selectedDtmf == null) {
                     Rlog.w(
                         TAG,
-                        "Outgoing SDP response lacks compatible ${telephoneEventRtpmapName(selectedAudioCodec)}; " +
+                        "Outgoing SDP response lacks compatible ${SipAudioCodecNegotiator.telephoneEventRtpmapName(selectedAudioCodec)}; " +
                             "falling back to telephone-event/8000",
                     )
                 }
@@ -4360,15 +4247,15 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
 
         val selectedAudioCodec = call.audioCodec
         val (amrTrack, amrTrackDesc) =
-            lookTrackMatching(speechCodecRtpmapName(selectedAudioCodec), notAdditional = "octet-align=1") ?: return 488
+            lookTrackMatching(SipAudioCodecNegotiator.speechCodecRtpmapName(selectedAudioCodec), notAdditional = "octet-align=1") ?: return 488
         val (dtmfTrack, dtmfTrackDesc) =
-            lookTrackMatching(telephoneEventRtpmapName(selectedAudioCodec)) ?: return 488
+            lookTrackMatching(SipAudioCodecNegotiator.telephoneEventRtpmapName(selectedAudioCodec)) ?: return 488
         val amrFmtpAnswer =
-            trackRequirements(amrTrack) ?: defaultSpeechFmtpAnswer(amrTrack, selectedAudioCodec)
+            trackRequirements(amrTrack) ?: SipAudioCodecNegotiator.defaultSpeechFmtpAnswer(amrTrack, selectedAudioCodec)
         val remotePtime = attributes.firstOrNull { it.startsWith("ptime:") } ?: "ptime:20"
         val remoteMaxptime = attributes.firstOrNull { it.startsWith("maxptime:") } ?: "maxptime:20"
         val allTracks = listOf(amrTrack, dtmfTrack)
-        val sdpBandwidthAs = sdpBandwidthAsKbps(selectedAudioCodec)
+        val sdpBandwidthAs = SipAudioCodecNegotiator.sdpBandwidthAsKbps(selectedAudioCodec)
         val remoteBandwidthLines = sdp
             .filter { it.startsWith("b=", ignoreCase = true) }
             .map { it.substring(2).trim() }
@@ -4637,24 +4524,26 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 "remoteMaxptime=$remoteMaxptime",
         )
 
-        val selectedAudioCodec = selectIncomingSpeechCodecFromOffer(
+        val selectedAudioCodec = SipAudioCodecNegotiator.selectIncomingSpeechCodecFromOffer(
+            logTag = TAG,
             sdp = sdp,
             context = "incoming INVITE callId=$incomingCallId",
+            amrWbMediaCodecAvailable = amrWbMediaCodecAvailable,
         )
 
         val (amrTrack, amrTrackDesc) = lookTrackMatching(
-            speechCodecRtpmapName(selectedAudioCodec),
+            SipAudioCodecNegotiator.speechCodecRtpmapName(selectedAudioCodec),
             additional = "",
             notAdditional = "octet-align=1",
         ) ?: return 488
         val amrTrackRequirements = trackRequirements(amrTrack)
-        val amrFmtpAnswer = amrTrackRequirements ?: defaultSpeechFmtpAnswer(amrTrack, selectedAudioCodec)
+        val amrFmtpAnswer = amrTrackRequirements ?: SipAudioCodecNegotiator.defaultSpeechFmtpAnswer(amrTrack, selectedAudioCodec)
 
         val (dtmfTrack, dtmfTrackDesc) =
-            lookTrackMatching(telephoneEventRtpmapName(selectedAudioCodec)) ?: return 488
+            lookTrackMatching(SipAudioCodecNegotiator.telephoneEventRtpmapName(selectedAudioCodec)) ?: return 488
 
         val allTracks = listOf(amrTrack, dtmfTrack)
-        val sdpBandwidthAs = sdpBandwidthAsKbps(selectedAudioCodec)
+        val sdpBandwidthAs = SipAudioCodecNegotiator.sdpBandwidthAsKbps(selectedAudioCodec)
         // destination is sip:<owner>@realm, extract owner
         val owner = request.destination.substringAfter("sip:").substringBefore("@")
 
@@ -4794,7 +4683,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             onIncomingCall?.invoke(
                 Object(),
                 m,
-                mapOf("call-id" to incomingCallId) + audioCodecExtras(selectedAudioCodec),
+                mapOf("call-id" to incomingCallId) + SipAudioCodecNegotiator.audioCodecExtras(selectedAudioCodec),
             )
 
                         Rlog.d(TAG, "Deferring incoming media threads until final ACK")
