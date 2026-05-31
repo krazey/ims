@@ -2350,40 +2350,22 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                         val timestamp = rtpTimestampSamples.getAndAdd(audioCodec.rtpTimestampStep)
                         val sendCall = currentCall ?: break
                         val storageFrame = encoderData.copyOfRange(bufPos, bufPos + frameSize)
-                        val buf = SipAmrRtpPayload.buildBandwidthEfficientRtpPacketFromStorageFrame(
+                        if (!SipUplinkMediaRtpSender.sendStorageFrame(
+                            logTag = TAG,
                             audioCodec = audioCodec,
                             payloadType = sendCall.amrTrack,
                             sequenceNumber = sequenceNumber,
                             timestamp = timestamp,
                             storageFrame = storageFrame,
                             marker = firstPacket,
-                        )
-                        if (buf == null) {
-                            Rlog.w(TAG, "Failed to build AMR RTP packet: codec=${audioCodec.name} ft=$ft frameSize=$frameSize")
-                            break
-                        }
+                            rtpSocket = sendCall.rtpSocket,
+                            remoteAddr = sendCall.rtpRemoteAddr,
+                            remotePort = sendCall.rtpRemotePort,
+                            frameType = ft,
+                            frameSize = frameSize,
+                            realFrameCount = realFrameCount,
+                        )) break
                         firstPacket = false
-                        try {
-                            if (!RtpPacketSender.send(
-                                tag = TAG,
-                                rtpSocket = sendCall.rtpSocket,
-                                bytes = buf,
-                                remoteAddr = sendCall.rtpRemoteAddr,
-                                remotePort = sendCall.rtpRemotePort,
-                                label = "RTP packet #$sequenceNumber",
-                            )) throw IOException("RTP send failed")
-                            if (realFrameCount < 10) {
-                                Rlog.d(TAG, "Sent RTP packet #$sequenceNumber ft=$ft ts=$timestamp payload=${buf.drop(12).take(4).joinToString(" ") { "%02x".format(it) }}... to ${sendCall.rtpRemoteAddr}:${sendCall.rtpRemotePort}")
-                            }
-                            if (realFrameCount == 0) {
-                                Rlog.d(TAG, "First RTP packet full hex: ${buf.joinToString(" ") { "%02x".format(it) }}")
-                            }
-                            if (sequenceNumber % 50 == 0 && realFrameCount >= 10) {
-                                Rlog.d(TAG, "Sent RTP packet #$sequenceNumber ft=$ft ts=$timestamp to ${sendCall.rtpRemoteAddr}:${sendCall.rtpRemotePort}")
-                            }
-                        } catch (e: Exception) {
-                            Rlog.e(TAG, "Failed to send RTP packet #$sequenceNumber: ${e.message}", e)
-                        }
 
                         realFrameCount++
                         bufPos += frameSize
