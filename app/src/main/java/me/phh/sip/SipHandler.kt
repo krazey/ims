@@ -432,6 +432,60 @@ class SipHandler(
     
     private var imsNetworkCallback: ConnectivityManager.NetworkCallback? = null
     private val sipReaderGeneration = AtomicInteger(0)
+    private val imsTransportGuard by lazy {
+        ImsTransportGuard(
+            TAG,
+            myHandler,
+            connectivityManager,
+            object : ImsTransportGuard.Actions {
+                override fun currentNetwork(): Network? =
+                    if (this@SipHandler::network.isInitialized) network else null
+
+                override fun isSocketInitialized(): Boolean = this@SipHandler::socket.isInitialized
+
+                override fun isImsReady(): Boolean = imsReady
+
+                override fun setImsReadyForTransportSuppression(ready: Boolean) {
+                    imsReady = ready
+                }
+
+                override fun notifyImsFailure() {
+                    imsFailureCallback?.invoke()
+                }
+
+                override fun markImsReady(reason: String) {
+                    this@SipHandler.markImsReady(reason)
+                }
+
+                override fun hasActiveOrPendingCall(): Boolean =
+                    hasActiveOrPendingCallForImsReconnectDeferral()
+
+                override fun setPendingReconnectAfterActiveCall(reason: String) {
+                    pendingImsReconnectAfterActiveCallReason = reason
+                }
+
+                override fun activeOrPendingCallSummary(): String =
+                    activeOrPendingCallSummaryForReconnectDeferral()
+
+                override fun invalidatePendingReconnects(reason: String) {
+                    reconnectController.invalidatePendingReconnects(reason)
+                }
+
+                override fun dropImsConnection(reason: String) {
+                    this@SipHandler.dropImsConnection(reason)
+                }
+
+                override fun setAbandonedBecauseOfNoPcscf() {
+                    abandonnedBecauseOfNoPcscf = true
+                }
+
+                override fun scheduleImsNetworkRequestRestart(reason: String, delayMs: Long) {
+                    this@SipHandler.scheduleImsNetworkRequestRestart(reason, delayMs)
+                }
+            },
+        )
+    }
+
 private val smsHandler = SipSmsHandler(
         tag = TAG,
         ctxt = ctxt,
@@ -639,15 +693,14 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         val elapsedMs = SystemClock.uptimeMillis() - wfcSubscriptionSettingMonitor.lastChangeUptimeMs()
         return elapsedMs in 0L..IWLAN_CONVERGENCE_OUTGOING_CALL_GUARD_MS
     }
-
     fun isReadyForOutgoingCall(): Boolean {
-        val ready =
+        val baseReady =
             imsReady &&
                 !reconnectController.isReconnecting() &&
                 this::network.isInitialized &&
                 this::socket.isInitialized
 
-        if (!ready) {
+        if (!baseReady) {
             Rlog.w(
                 TAG,
                 "Rejecting outgoing call while IMS is not stable: " +
@@ -655,10 +708,19 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
                     "networkInitialized=${this::network.isInitialized} " +
                     "socketInitialized=${this::socket.isInitialized}",
             )
+            return false
         }
 
-        if (ready && isWaitingForIwlanAfterWfcPreferenceChange()) {
-            val elapsedMs = SystemClock.uptimeMillis() - wfcSubscriptionSettingMonitor.lastChangeUptimeMs()
+        val currentLocalAddr = if (this::localAddr.isInitialized) localAddr else null
+        if (!imsTransportGuard.isUsableForOutgoingCall(currentLocalAddr, "outgoing call readiness")) {
+            val staleReason = "outgoing call attempted while IMS transport is stale or suspended"
+            Rlog.w(TAG, "Rejecting outgoing call while IMS transport is stale/suspended; forcing IMS reconnect")
+            reconnectIms(staleReason)
+            return false
+        }
+
+        if (isWaitingForIwlanAfterWfcPreferenceChange()) {
+            val elapsedMs = android.os.SystemClock.uptimeMillis() - wfcSubscriptionSettingMonitor.lastChangeUptimeMs()
             Rlog.w(
                 TAG,
                 "Rejecting outgoing call while waiting for IWLAN IMS after WFC preference/subscription change: " +
@@ -667,7 +729,7 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
             return false
         }
 
-        return ready
+        return true
     }
 
     fun getRegistrationTech(): Int = imsRegistrationTech
@@ -1574,15 +1636,21 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                 override fun onBlockedStatusChanged(network: Network, blocked: Boolean) {
                     Rlog.d(TAG, "IMS network blocked status changed $blocked")
                 }
-
                 override fun onCapabilitiesChanged(
                     network: Network,
                     networkCapabilities: NetworkCapabilities
                 ) {
                     Rlog.d(TAG, "IMS network capabilities changed $networkCapabilities")
-                    if (
+                    val isCurrentImsNetwork =
                         this@SipHandler::network.isInitialized &&
-                            network == this@SipHandler.network &&
+                            network == this@SipHandler.network
+
+                    if (isCurrentImsNetwork) {
+                        imsTransportGuard.onCapabilitiesChanged(network, networkCapabilities)
+                    }
+
+                    if (
+                        isCurrentImsNetwork &&
                             hasPendingIncomingCallForAcceptGuard()
                     ) {
                         noteImsAccessChangeDuringPendingIncomingCall(
@@ -3178,8 +3246,18 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             val rtpSocket = try {
                 DatagramSocket(0, localAddr)
             } catch (t: Throwable) {
+                val staleReason = "outgoing RTP bind failed for localAddr=$localAddr"
                 Rlog.e(TAG, "Failed to bind outgoing RTP socket to $localAddr; IMS address is likely stale", t)
-                reconnectIms("outgoing RTP bind failed for localAddr=$localAddr")
+                reconnectIms(staleReason)
+                onCancelledCall?.invoke(
+                    Object(),
+                    "",
+                    mapOf(
+                        "statusCode" to "480",
+                        "statusString" to "Stale IMS transport",
+                        "localImsAddressStale" to "true",
+                    ),
+                )
                 return@thread
             }
             try {
