@@ -2259,11 +2259,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
 
             // DANGER: Don't open the mic before the user acknowledged opening the call!
 
-            val minBufferSize = AudioRecord.getMinBufferSize(
-                audioCodec.sampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-            )
+            val minBufferSize = SipAudioRecordFactory.minBufferSize(audioCodec)
             if (minBufferSize <= 0) {
                 Rlog.e(TAG, "AudioRecord.getMinBufferSize failed: $minBufferSize")
                 try { encoder.stop() } catch (_: Throwable) { }

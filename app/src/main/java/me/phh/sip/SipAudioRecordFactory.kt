@@ -17,4 +17,12 @@ object SipAudioRecordFactory {
             AudioFormat.ENCODING_PCM_16BIT,
             bufferSize,
         )
+    fun minBufferSize(
+        audioCodec: NegotiatedAudioCodec = SipAudioCodecs.AMR_NB,
+    ): Int =
+        AudioRecord.getMinBufferSize(
+            audioCodec.sampleRate,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
 }
