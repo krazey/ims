@@ -2296,25 +2296,14 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 val nRead = audioRecord.read(buffer, 0, buffer.size)
                 if (callStopped.get() || callGeneration.get() != gen) break
                 if (nRead <= 0) continue
-                if (realFrameCount < 5) {
-                    val allZero = buffer.take(nRead.coerceAtLeast(0)).all { it == 0.toByte() }
-                    Rlog.d(TAG, "AudioRecord.read nRead=$nRead allZero=$allZero (bufferSize=${buffer.size})")
-                }
-
-                val inBufIdx = encoder.dequeueInputBuffer(-1)
-                val inBuf = encoder.getInputBuffer(inBufIdx)!!
-                inBuf.clear()
-                if (nRead > 0) {
-                    SipUplinkGain.applyInPlace(
-                        buffer = buffer,
-                        size = nRead,
-                        gainQ8 = imsUplinkGainQ8,
-                    )
-                }
-                inBuf.put(buffer, 0, nRead)
-
-                // Fake timestamp but it is not appearing in the output stream anyway
-                encoder.queueInputBuffer(inBufIdx, 0, nRead, System.nanoTime() / 1000, 0)
+                SipUplinkAudioEncoder.queuePcmInput(
+                    logTag = TAG,
+                    encoder = encoder,
+                    buffer = buffer,
+                    size = nRead,
+                    gainQ8 = imsUplinkGainQ8,
+                    logInput = realFrameCount < 5,
+                )
 
                 // Drain all output frames the encoder produced for this input.
                 // Use -1 (block) on the first call so we always wait for the async
