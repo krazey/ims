@@ -2282,18 +2282,12 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 audioRecord = audioRecord,
             )
 
-            val prevAudioMode = audioManager.mode
-            audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
-            try {
-                audioRecord.startRecording()
-            } catch (t: Throwable) {
-                Rlog.e(TAG, "AudioRecord.startRecording failed", t)
-                try { audioRecord.release() } catch (_: Throwable) { }
-                try { encoder.stop() } catch (_: Throwable) { }
-                try { encoder.release() } catch (_: Throwable) { }
-                return@thread
-            }
-            Rlog.d(TAG, "AudioRecord started, state=${audioRecord.recordingState} audioMode=${audioManager.mode} (was $prevAudioMode) preferredDevice=${audioRecord.preferredDevice?.type}")
+            val prevAudioMode = SipAudioRecordStarter.startForImsUplink(
+                logTag = TAG,
+                audioManager = audioManager,
+                audioRecord = audioRecord,
+                encoder = encoder,
+            ) ?: return@thread
             Rlog.d(
                 TAG,
                 "IMS uplink gain q8=$imsUplinkGainQ8 ${SipUplinkGain.propertySummary()}",
