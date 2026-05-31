@@ -3909,14 +3909,9 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 Rlog.d(TAG, "Downlink PCM playout exiting: running=${downlinkPlayoutRunning.get()} callStopped=${callStopped.get()} genMismatch=${callGeneration.get() != gen} queued=${downlinkPcmQueue.size}")
             }
 
-            val decoder = MediaCodec.createDecoderByType(audioCodec.mimeType)
-            val mediaFormat = MediaFormat.createAudioFormat(
-                audioCodec.mimeType,
-                audioCodec.sampleRate,
-                audioCodec.channelCount,
+            val decoder = SipAudioCodecFactory.createStartedDecoder(
+                audioCodec = audioCodec,
             )
-            decoder.configure(mediaFormat, null, null, 0)
-            decoder.start()
 
             var receivedCount = 0
             while(true) {
