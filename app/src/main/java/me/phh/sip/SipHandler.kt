@@ -2156,16 +2156,9 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             rtpTimestampSamples.set(0)
             rtpDtmfTimestampSamples.set(0)
             Rlog.d(TAG, "Encode thread started: codec=${audioCodec.name}/${audioCodec.sampleRate} amrTrack=${call.amrTrack} remote=${call.rtpRemoteAddr}:${call.rtpRemotePort} gen=$gen")
-            val encoder = MediaCodec.createEncoderByType(audioCodec.mimeType)
-            val mediaFormat = MediaFormat.createAudioFormat(
-                audioCodec.mimeType,
-                audioCodec.sampleRate,
-                audioCodec.channelCount,
+            val encoder = SipAudioCodecFactory.createStartedEncoder(
+                audioCodec = audioCodec,
             )
-            mediaFormat.setInteger(MediaFormat.KEY_BIT_RATE, audioCodec.bitRate)
-            mediaFormat.setInteger(MediaFormat.KEY_PRIORITY, 0) //  0 = realtime priority, encoder will not fall behind
-            encoder.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            encoder.start()
 
             while(!callStarted.get()) {
                 if (callStopped.get() || callGeneration.get() != gen) {
