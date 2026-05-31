@@ -3860,18 +3860,8 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 Rlog.d(TAG, "Decode thread forcing MODE_IN_COMMUNICATION before AudioTrack: was=$prevDecodeAudioMode")
                 audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             }
-            val minBufferSize = AudioTrack.getMinBufferSize(
-                audioCodec.sampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-            )
-            val audioTrack = AudioTrack(
-                AudioManager.STREAM_VOICE_CALL,
-                audioCodec.sampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                minBufferSize,
-                AudioTrack.MODE_STREAM,
+            val audioTrack = SipAudioTrackFactory.createVoiceCallTrack(
+                audioCodec = audioCodec,
             )
             audioTrack.play()
             // PhhIms downlink PCM playout smoother: decouple RTP receive jitter
