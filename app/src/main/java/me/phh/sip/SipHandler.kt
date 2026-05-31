@@ -2189,63 +2189,34 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 },
             )) return@thread
             if (!call.outgoing && incomingMicStartDelayMs > 0L) {
-                val settleDeadline = System.currentTimeMillis() + incomingMicStartDelayMs
-                var settlePackets = 0
-                Rlog.d(
-                    TAG,
-                    "Delaying incoming AudioRecord start by ${incomingMicStartDelayMs}ms after ACK: reason=$reason gen=$gen",
-                )
-                while (System.currentTimeMillis() < settleDeadline) {
-                    if (callStopped.get() || callGeneration.get() != gen) {
-                        Rlog.d(
-                            TAG,
-                            "Incoming mic delay exiting early: callStopped=${callStopped.get()} genMismatch=${callGeneration.get() != gen}",
+                if (!SipUplinkIncomingMicSettlePacer.delayBeforeMicStart(
+                    logTag = TAG,
+                    delayMs = incomingMicStartDelayMs,
+                    reason = reason,
+                    callStopped = callStopped,
+                    callGeneration = callGeneration,
+                    generation = gen,
+                    nextSequenceNumber = { rtpSequenceNumber.getAndIncrement() },
+                    nextTimestamp = { rtpTimestampSamples.getAndAdd(audioCodec.rtpTimestampStep) },
+                    sendPacket = { sequenceNumber, timestamp ->
+                        val sendCall = currentCall ?: call
+                        SipUplinkSilenceRtpSender.sendNoDataPacket(
+                            logTag = TAG,
+                            audioCodec = audioCodec,
+                            payloadType = sendCall.amrTrack,
+                            sequenceNumber = sequenceNumber,
+                            timestamp = timestamp,
+                            rtpSocket = sendCall.rtpSocket,
+                            remoteAddr = sendCall.rtpRemoteAddr,
+                            remotePort = sendCall.rtpRemotePort,
+                            label = "incoming RTP settle silence #$sequenceNumber",
                         )
-                        try {
-                            encoder.stop()
-                        } catch (_: Throwable) {
-                        }
-                        try {
-                            encoder.release()
-                        } catch (_: Throwable) {
-                        }
-                        return@thread
-                    }
-            
-                    val sequenceNumber = rtpSequenceNumber.getAndIncrement()
-            
-                    val timestamp = rtpTimestampSamples.getAndAdd(audioCodec.rtpTimestampStep)
-                    val sendCall = currentCall ?: call
-                                    try {
-                                    if (!SipUplinkSilenceRtpSender.sendNoDataPacket(
-                                        logTag = TAG,
-                                        audioCodec = audioCodec,
-                                        payloadType = sendCall.amrTrack,
-                                        sequenceNumber = sequenceNumber,
-                                        timestamp = timestamp,
-                                        rtpSocket = sendCall.rtpSocket,
-                                        remoteAddr = sendCall.rtpRemoteAddr,
-                                        remotePort = sendCall.rtpRemotePort,
-                                        label = "incoming RTP settle silence #$sequenceNumber",
-                                    )) {
-                                        throw IOException("RTP send failed")
-                                    }
-                    } catch (e: Exception) {
-                        Rlog.w(TAG, "Incoming RTP settle silence failed, stopping encode thread: ${e.message}", e)
-                        try {
-                            encoder.stop()
-                        } catch (_: Throwable) {
-                        }
-                        try {
-                            encoder.release()
-                        } catch (_: Throwable) {
-                        }
-                        return@thread
-                    }
-                    settlePackets++
-                    Thread.sleep(20)
-                }
-                Rlog.d(TAG, "Incoming AudioRecord delay complete after $settlePackets packets; starting real encoding")
+                    },
+                    cleanupOnExit = {
+                        try { encoder.stop() } catch (_: Throwable) { }
+                        try { encoder.release() } catch (_: Throwable) { }
+                    },
+                )) return@thread
             }
 
             // DANGER: Don't open the mic before the user acknowledged opening the call!
