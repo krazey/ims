@@ -2276,19 +2276,11 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             }
             Rlog.d(TAG, "AudioRecord created with minBufferSize=$minBufferSize, state=${audioRecord.state}")
 
-            // Pin capture to the built-in mic so the Samsung HAL cannot reroute it to
-            // the baseband PCM path (pcmC0D110c) that produces silence for software IMS.
-            // setPreferredDevice overrides HAL source-based routing while keeping
-            // VOICE_COMMUNICATION semantics (call-mode output path stays correct).
-            val audioManager = ctxt.getSystemService(android.media.AudioManager::class.java)
-            val builtinMic = audioManager.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS)
-                .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
-            if (builtinMic != null) {
-                audioRecord.preferredDevice = builtinMic
-                Rlog.d(TAG, "AudioRecord preferredDevice set to builtin mic: id=${builtinMic.id} name=${builtinMic.productName}")
-            } else {
-                Rlog.w(TAG, "AudioRecord: no TYPE_BUILTIN_MIC found, proceeding without preferredDevice")
-            }
+            val audioManager = SipAudioRecordRouting.pinBuiltinMic(
+                logTag = TAG,
+                context = ctxt,
+                audioRecord = audioRecord,
+            )
 
             val prevAudioMode = audioManager.mode
             audioManager.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
