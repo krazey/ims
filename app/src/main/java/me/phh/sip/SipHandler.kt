@@ -1371,9 +1371,12 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         // Check if there is a security-server header in the reply
         if(plainRegReply.headers.containsKey("security-server")) {
             val securityServer = plainRegReply.headers["security-server"]!!
-            commonHeaders += ("security-verify" to securityServer)
-            registerHeaders += ("security-verify" to securityServer)
-            val securityServerParams = SipSecurityServerSelector.select(securityServer).params
+            val securityServerSelection = SipSecurityServerSelector.select(securityServer)
+            val selectedSecurityVerify = listOf(securityServerSelection.toHeaderValue())
+            Rlog.d(TAG, "Selected Security-Server for Security-Verify: ${selectedSecurityVerify.first()}")
+            commonHeaders += ("security-verify" to selectedSecurityVerify)
+            registerHeaders += ("security-verify" to selectedSecurityVerify)
+            val securityServerParams = securityServerSelection.params
                 selectedSecurityClientForPromotedRegister =
                     SipRegisterNegotiationPolicy.selectedSecurityClientHeader(
                         securityServerParams = securityServerParams,

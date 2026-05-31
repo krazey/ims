@@ -4,7 +4,37 @@ package me.phh.sip
 data class SipSecurityServerSelection(
     val type: String,
     val params: Map<String, String>,
-)
+) {
+    fun toHeaderValue(): String {
+        val preferredKeys = listOf(
+            "q",
+            "alg",
+            "mod",
+            "ealg",
+            "spi-c",
+            "spi-s",
+            "port-c",
+            "port-s",
+        )
+
+        val orderedParams =
+            preferredKeys.mapNotNull { key -> params[key]?.let { value -> key to value } } +
+                params.entries
+                    .filter { (key, _) -> key !in preferredKeys }
+                    .sortedBy { (key, _) -> key }
+                    .map { (key, value) -> key to value }
+
+        return buildString {
+            append(type)
+            orderedParams.forEach { (key, value) ->
+                append(';')
+                append(key)
+                append('=')
+                append(value)
+            }
+        }
+    }
+}
 
 object SipSecurityServerSelector {
     private val supportedAlgorithms = listOf("hmac-sha-1-96", "hmac-md5-96")
