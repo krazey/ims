@@ -2160,37 +2160,34 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 audioCodec = audioCodec,
             )
 
-            while(!callStarted.get()) {
-                if (callStopped.get() || callGeneration.get() != gen) {
-                    Rlog.d(TAG, "Silence loop exiting early: callStopped=${callStopped.get()}, genMismatch=${callGeneration.get() != gen}")
+            if (!SipUplinkSilencePacer.sendUntilCallStarted(
+                logTag = TAG,
+                callStarted = callStarted,
+                callStopped = callStopped,
+                callGeneration = callGeneration,
+                generation = gen,
+                nextSequenceNumber = { rtpSequenceNumber.getAndIncrement() },
+                nextTimestamp = { rtpTimestampSamples.getAndAdd(audioCodec.rtpTimestampStep) },
+                totalPacketsSent = { rtpSequenceNumber.get() },
+                sendPacket = { sequenceNumber, timestamp ->
+                    val sendCall = currentCall ?: call
+                    SipUplinkSilenceRtpSender.sendNoDataPacket(
+                        logTag = TAG,
+                        audioCodec = audioCodec,
+                        payloadType = sendCall.amrTrack,
+                        sequenceNumber = sequenceNumber,
+                        timestamp = timestamp,
+                        rtpSocket = sendCall.rtpSocket,
+                        remoteAddr = sendCall.rtpRemoteAddr,
+                        remotePort = sendCall.rtpRemotePort,
+                        label = "RTP packet #$sequenceNumber",
+                    )
+                },
+                cleanupOnExit = {
                     encoder.stop()
                     encoder.release()
-                    return@thread
-                }
-                val sequenceNumber = rtpSequenceNumber.getAndIncrement()
-                val timestamp = rtpTimestampSamples.getAndAdd(audioCodec.rtpTimestampStep)
-                Thread.sleep(20)
-                val sendCall = currentCall ?: call
-                                try {
-                                if (!SipUplinkSilenceRtpSender.sendNoDataPacket(
-                                    logTag = TAG,
-                                    audioCodec = audioCodec,
-                                    payloadType = sendCall.amrTrack,
-                                    sequenceNumber = sequenceNumber,
-                                    timestamp = timestamp,
-                                    rtpSocket = sendCall.rtpSocket,
-                                    remoteAddr = sendCall.rtpRemoteAddr,
-                                    remotePort = sendCall.rtpRemotePort,
-                                    label = "RTP packet #$sequenceNumber",
-                                )) throw IOException("RTP send failed")
-                } catch (e: Exception) {
-                    Rlog.w(TAG, "Silence RTP send failed, stopping encode thread: ${e.message}", e)
-                    encoder.stop()
-                    encoder.release()
-                    return@thread
-                }
-                }
-                Rlog.d(TAG, "Silence loop exited after ${rtpSequenceNumber.get()} packets, starting real encoding")
+                },
+            )) return@thread
             if (!call.outgoing && incomingMicStartDelayMs > 0L) {
                 val settleDeadline = System.currentTimeMillis() + incomingMicStartDelayMs
                 var settlePackets = 0
