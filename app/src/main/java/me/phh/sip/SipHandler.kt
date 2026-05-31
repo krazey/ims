@@ -2171,21 +2171,18 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 val timestamp = rtpTimestampSamples.getAndAdd(audioCodec.rtpTimestampStep)
                 Thread.sleep(20)
                 val sendCall = currentCall ?: call
-                val buf = SipAmrRtpPayload.buildNoDataRtpPacket(
-                    audioCodec = audioCodec,
-                    payloadType = sendCall.amrTrack,
-                    sequenceNumber = sequenceNumber,
-                    timestamp = timestamp,
-                )
-                try {
-                    if (!RtpPacketSender.send(
-                        tag = TAG,
-                        rtpSocket = sendCall.rtpSocket,
-                        bytes = buf,
-                        remoteAddr = sendCall.rtpRemoteAddr,
-                        remotePort = sendCall.rtpRemotePort,
-                        label = "RTP packet #$sequenceNumber",
-                    )) throw IOException("RTP send failed")
+                                try {
+                                if (!SipUplinkSilenceRtpSender.sendNoDataPacket(
+                                    logTag = TAG,
+                                    audioCodec = audioCodec,
+                                    payloadType = sendCall.amrTrack,
+                                    sequenceNumber = sequenceNumber,
+                                    timestamp = timestamp,
+                                    rtpSocket = sendCall.rtpSocket,
+                                    remoteAddr = sendCall.rtpRemoteAddr,
+                                    remotePort = sendCall.rtpRemotePort,
+                                    label = "RTP packet #$sequenceNumber",
+                                )) throw IOException("RTP send failed")
                 } catch (e: Exception) {
                     Rlog.w(TAG, "Silence RTP send failed, stopping encode thread: ${e.message}", e)
                     encoder.stop()
@@ -2222,23 +2219,20 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             
                     val timestamp = rtpTimestampSamples.getAndAdd(audioCodec.rtpTimestampStep)
                     val sendCall = currentCall ?: call
-                    val buf = SipAmrRtpPayload.buildNoDataRtpPacket(
-                        audioCodec = audioCodec,
-                        payloadType = sendCall.amrTrack,
-                        sequenceNumber = sequenceNumber,
-                        timestamp = timestamp,
-                    )
-                    try {
-                        if (!RtpPacketSender.send(
-                            tag = TAG,
-                            rtpSocket = sendCall.rtpSocket,
-                            bytes = buf,
-                            remoteAddr = sendCall.rtpRemoteAddr,
-                            remotePort = sendCall.rtpRemotePort,
-                            label = "incoming RTP settle silence #$sequenceNumber",
-                        )) {
-                            throw IOException("RTP send failed")
-                        }
+                                    try {
+                                    if (!SipUplinkSilenceRtpSender.sendNoDataPacket(
+                                        logTag = TAG,
+                                        audioCodec = audioCodec,
+                                        payloadType = sendCall.amrTrack,
+                                        sequenceNumber = sequenceNumber,
+                                        timestamp = timestamp,
+                                        rtpSocket = sendCall.rtpSocket,
+                                        remoteAddr = sendCall.rtpRemoteAddr,
+                                        remotePort = sendCall.rtpRemotePort,
+                                        label = "incoming RTP settle silence #$sequenceNumber",
+                                    )) {
+                                        throw IOException("RTP send failed")
+                                    }
                     } catch (e: Exception) {
                         Rlog.w(TAG, "Incoming RTP settle silence failed, stopping encode thread: ${e.message}", e)
                         try {
