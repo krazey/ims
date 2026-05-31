@@ -2228,59 +2228,37 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             val audioRecord = capture.audioRecord
             val minBufferSize = capture.bufferSize
             val prevAudioMode = capture.previousAudioMode
-            Rlog.d(
-                TAG,
-                "IMS uplink gain q8=$imsUplinkGainQ8 ${SipUplinkGain.propertySummary()}",
+            SipUplinkAudioLoop.run(
+                logTag = TAG,
+                audioRecord = audioRecord,
+                bufferSize = minBufferSize,
+                encoder = encoder,
+                audioCodec = audioCodec,
+                callStopped = callStopped,
+                callGeneration = callGeneration,
+                generation = gen,
+                gainQ8 = imsUplinkGainQ8,
+                nextSequenceNumber = { rtpSequenceNumber.getAndIncrement() },
+                nextTimestamp = { rtpTimestampSamples.getAndAdd(audioCodec.rtpTimestampStep) },
+                sendFrame = sendFrame@{ sequenceNumber, timestamp, storageFrame, marker, frameType, frameSize, frameCount ->
+                    val sendCall = currentCall ?: return@sendFrame false
+                    SipUplinkMediaRtpSender.sendStorageFrame(
+                        logTag = TAG,
+                        audioCodec = audioCodec,
+                        payloadType = sendCall.amrTrack,
+                        sequenceNumber = sequenceNumber,
+                        timestamp = timestamp,
+                        storageFrame = storageFrame,
+                        marker = marker,
+                        rtpSocket = sendCall.rtpSocket,
+                        remoteAddr = sendCall.rtpRemoteAddr,
+                        remotePort = sendCall.rtpRemotePort,
+                        frameType = frameType,
+                        frameSize = frameSize,
+                        realFrameCount = frameCount,
+                    )
+                },
             )
-
-            var firstPacket = true
-            var realFrameCount = 0
-
-            val buffer = ByteArray(minBufferSize)
-            while (true) {
-                if (callStopped.get() || callGeneration.get() != gen) break
-                val nRead = audioRecord.read(buffer, 0, buffer.size)
-                if (callStopped.get() || callGeneration.get() != gen) break
-                if (nRead <= 0) continue
-                SipUplinkAudioEncoder.queuePcmInput(
-                    logTag = TAG,
-                    encoder = encoder,
-                    buffer = buffer,
-                    size = nRead,
-                    gainQ8 = imsUplinkGainQ8,
-                    logInput = realFrameCount < 5,
-                )
-
-                val drainState = SipUplinkAudioEncoder.drainEncodedOutput(
-                    logTag = TAG,
-                    encoder = encoder,
-                    audioCodec = audioCodec,
-                    firstPacket = firstPacket,
-                    realFrameCount = realFrameCount,
-                    nextSequenceNumber = { rtpSequenceNumber.getAndIncrement() },
-                    nextTimestamp = { rtpTimestampSamples.getAndAdd(audioCodec.rtpTimestampStep) },
-                    sendFrame = sendFrame@{ sequenceNumber, timestamp, storageFrame, marker, frameType, frameSize, frameCount ->
-                        val sendCall = currentCall ?: return@sendFrame false
-                        SipUplinkMediaRtpSender.sendStorageFrame(
-                            logTag = TAG,
-                            audioCodec = audioCodec,
-                            payloadType = sendCall.amrTrack,
-                            sequenceNumber = sequenceNumber,
-                            timestamp = timestamp,
-                            storageFrame = storageFrame,
-                            marker = marker,
-                            rtpSocket = sendCall.rtpSocket,
-                            remoteAddr = sendCall.rtpRemoteAddr,
-                            remotePort = sendCall.rtpRemotePort,
-                            frameType = frameType,
-                            frameSize = frameSize,
-                            realFrameCount = frameCount,
-                        )
-                    },
-                )
-                firstPacket = drainState.firstPacket
-                realFrameCount = drainState.realFrameCount
-            }
             SipUplinkAudioCleanup.cleanup(
                 logTag = TAG,
                 context = ctxt,
