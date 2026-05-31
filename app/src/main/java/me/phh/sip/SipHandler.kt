@@ -45,18 +45,6 @@ class SipHandler(
     }
 
 
-    private fun createVoiceCommunicationAudioRecord(
-        bufferSize: Int,
-        audioCodec: NegotiatedAudioCodec = SipAudioCodecs.AMR_NB,
-    ): AudioRecord =
-        AudioRecord(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-            audioCodec.sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferSize,
-        )
-
     private val amrWbMediaCodecAvailable: Boolean by lazy {
         SipAudioCodecNegotiator.isMediaCodecAvailableFor(TAG, SipAudioCodecs.AMR_WB)
     }
@@ -2285,7 +2273,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 return@thread
             }
             val audioRecord = try {
-                createVoiceCommunicationAudioRecord(minBufferSize, audioCodec)
+                SipAudioRecordFactory.createVoiceCommunicationRecord(bufferSize = minBufferSize, audioCodec = audioCodec)
             } catch (t: Throwable) {
                 Rlog.e(TAG, "AudioRecord creation failed with bufferSize=$minBufferSize", t)
                 try { encoder.stop() } catch (_: Throwable) { }
