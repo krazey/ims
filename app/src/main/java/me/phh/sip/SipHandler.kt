@@ -905,7 +905,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                         "pt=${active.amrTrack}/${active.dtmfTrack} generation=${callGeneration.get()}",
                 )
                 callDecodeThread()
-                callEncodeThread()
+                callEncodeThread(callSnapshot = active)
             } else {
                 Rlog.w(TAG, "Outgoing media restart skipped; threads already restarted")
             }
@@ -1698,7 +1698,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             if (threadsStarted.compareAndSet(false, true)) {
                 Rlog.d(TAG, "Starting incoming media threads from final ACK")
                 callDecodeThread()
-                callEncodeThread()
+                callEncodeThread(callSnapshot = call)
             } else {
                 Rlog.d(TAG, "Incoming media threads already started before final ACK")
             }
@@ -2147,15 +2147,21 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
     fun callEncodeThread(
         incomingMicStartDelayMs: Long = 0L,
         reason: String = "default",
+        callSnapshot: Call? = null,
     ) {
-        val call = currentCall!!
+        val call = callSnapshot ?: currentCall
+        if (call == null) {
+            Rlog.w(TAG, "callEncodeThread: no currentCall; not starting encoder reason=$reason")
+            return
+        }
         val audioCodec = call.audioCodec
+        val callId = call.callIdOrEmpty()
         val gen = callGeneration.get()
         thread {
             rtpSequenceNumber.set(0)
             rtpTimestampSamples.set(0)
             rtpDtmfTimestampSamples.set(0)
-            Rlog.d(TAG, "Encode thread started: codec=${audioCodec.name}/${audioCodec.sampleRate} amrTrack=${call.amrTrack} remote=${call.rtpRemoteAddr}:${call.rtpRemotePort} gen=$gen")
+            Rlog.d(TAG, "Encode thread started: codec=${audioCodec.name}/${audioCodec.sampleRate} callId=$callId amrTrack=${call.amrTrack} remote=${call.rtpRemoteAddr}:${call.rtpRemotePort} gen=$gen")
             val encoder = SipAudioCodecFactory.createStartedEncoder(
                 audioCodec = audioCodec,
             )
@@ -2170,7 +2176,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 nextTimestamp = { rtpTimestampSamples.getAndAdd(audioCodec.rtpTimestampStep) },
                 totalPacketsSent = { rtpSequenceNumber.get() },
                 sendPacket = { sequenceNumber, timestamp ->
-                    val sendCall = currentCall ?: call
+                    val sendCall = currentCall?.takeIf { it.callIdOrEmpty() == callId } ?: call
                     SipUplinkSilenceRtpSender.sendNoDataPacket(
                         logTag = TAG,
                         audioCodec = audioCodec,
@@ -2199,7 +2205,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                     nextSequenceNumber = { rtpSequenceNumber.getAndIncrement() },
                     nextTimestamp = { rtpTimestampSamples.getAndAdd(audioCodec.rtpTimestampStep) },
                     sendPacket = { sequenceNumber, timestamp ->
-                        val sendCall = currentCall ?: call
+                        val sendCall = currentCall?.takeIf { it.callIdOrEmpty() == callId } ?: call
                         SipUplinkSilenceRtpSender.sendNoDataPacket(
                             logTag = TAG,
                             audioCodec = audioCodec,
@@ -2484,14 +2490,16 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             val responseWriter = call.incomingResponseWriter ?: socket.gWriter()
             val responseBytes = msg3.toByteArray()
             Rlog.d(TAG, "Sending $msg3 via incomingResponseWriter=${call.incomingResponseWriter != null}")
-                if (!writeSipBytes(responseWriter, responseBytes, "incoming INVITE final 200 OK callId=$acceptedCallId")) {
+            incomingFinalResponseSent.set(true)
+            incomingAcceptedAwaitingAck.set(true)
+            if (!writeSipBytes(responseWriter, responseBytes, "incoming INVITE final 200 OK callId=$acceptedCallId")) {
                     incomingFinalResponseSent.set(false)
                     incomingAcceptedAwaitingAck.set(false)
                     incomingHangupAfterAck.set(false)
                     onCancelledCall?.invoke(Object(), "", mapOf("call-id" to acceptedCallId))
                     return@thread
                 }
-                incomingFinalResponseSent.set(true)
+            incomingFinalResponseSent.set(true)
             incomingAcceptedAwaitingAck.set(true)
             incomingHangupAfterAck.set(false)
             if (threadsStarted.compareAndSet(false, true)) {
@@ -2500,6 +2508,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 callEncodeThread(
                     incomingMicStartDelayMs = 250L,
                     reason = "incoming ACK audio route settle",
+                    callSnapshot = call,
                 )
             } else {
                 Rlog.d(TAG, "Incoming media threads already started while accepting call")
@@ -2518,7 +2527,10 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                     val stillSameCall = currentCall?.callIdOrNull() == acceptedCallId
                     if (!incomingAcceptedAwaitingAck.get() || !stillSameCall) break
                     Rlog.w(TAG, "Retransmitting incoming 200 OK waiting for ACK callId=$acceptedCallId elapsed=${elapsedMs}ms")
-                    if (!writeSipBytes(responseWriter, responseBytes, "incoming INVITE final 200 OK retransmit callId=$acceptedCallId elapsed=${elapsedMs}ms")) {
+                    val retransmitWriter =
+                        currentCall?.takeIf { it.callIdOrNull() == acceptedCallId }?.incomingResponseWriter
+                            ?: responseWriter
+                    if (!writeSipBytes(retransmitWriter, responseBytes, "incoming INVITE final 200 OK retransmit callId=$acceptedCallId elapsed=${elapsedMs}ms")) {
                         Rlog.w(TAG, "Stopping incoming 200 OK retransmit after write failure callId=$acceptedCallId elapsed=${elapsedMs}ms")
                         incomingAcceptedAwaitingAck.set(false)
                         incomingHangupAfterAck.set(false)
@@ -2728,7 +2740,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         if (!call.outgoing && incomingFinalResponseSent.get() && !callStarted.get()) {
             Rlog.w(TAG, "Local hangup before incoming ACK; deferring BYE until ACK and keeping 200 OK retransmission active")
             incomingHangupAfterAck.set(true)
-            rememberTerminatedIncomingCall(call.callIdOrEmpty(), "local pre-ACK hangup")
+            Rlog.d(TAG, "Keeping accepted pre-ACK incoming Call-ID live for final 200 OK retransmits")
             onCancelledCall?.invoke(Object(), "", emptyMap())
             return
         }
@@ -4020,8 +4032,24 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         val incomingCallId = request.headers["call-id"]!![0]
         if (wasRecentlyTerminatedIncomingCall(incomingCallId)) {
             val incomingCseq = request.headers["cseq"]?.getOrNull(0).orEmpty()
-            Rlog.w(TAG, "Rejecting duplicate incoming INVITE for recently terminated Call-ID: callId=$incomingCallId cseq=$incomingCseq")
-            return 486
+            val maybeCurrentCall = currentCall
+            val isAcceptedPreAckCurrentCall =
+                maybeCurrentCall != null &&
+                    !maybeCurrentCall.outgoing &&
+                    maybeCurrentCall.callIdOrEmpty() == incomingCallId &&
+                    (incomingAcceptedAwaitingAck.get() || incomingFinalResponseSent.get()) &&
+                    incomingHangupAfterAck.get()
+
+            if (!isAcceptedPreAckCurrentCall) {
+                Rlog.w(TAG, "Rejecting duplicate incoming INVITE for recently terminated Call-ID: callId=$incomingCallId cseq=$incomingCseq")
+                return 486
+            }
+
+            Rlog.w(
+                TAG,
+                "Allowing duplicate incoming INVITE for accepted pre-ACK call despite recently terminated marker: " +
+                    "callId=$incomingCallId cseq=$incomingCseq awaitingAck=${incomingAcceptedAwaitingAck.get()}",
+            )
         }
         val incomingResponseWriter = dispatcher.writerForCallId(incomingCallId) ?: socket.gWriter()
         val existingCall = currentCall
@@ -4031,6 +4059,95 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             request.headers["to"]?.any { it.contains(";tag=", ignoreCase = true) } == true
         if (isInDialogInvite) {
             return handleInDialogInvite(request, existingCall!!, incomingResponseWriter)
+        }
+        if (existingCall != null && !existingCall.outgoing && existingCall.callIdOrEmpty() == incomingCallId) {
+            val incomingCseq = request.headers["cseq"]?.getOrNull(0).orEmpty()
+            val duplicateAnswered = incomingFinalResponseSent.get() || incomingAcceptedAwaitingAck.get() || callStarted.get()
+            val refreshedHeaders = responseHeadersFromRequest(
+                request = request,
+                toOverride = existingCall.callHeaders["to"],
+            )
+            val refreshedCall = existingCall.copy(
+                callHeaders = existingCall.callHeaders + refreshedHeaders,
+                incomingResponseWriter = incomingResponseWriter,
+            )
+            currentCall = refreshedCall
+
+            Rlog.w(
+                TAG,
+                "Refreshing duplicate incoming INVITE for existing incoming dialog: " +
+                    "callId=$incomingCallId cseq=$incomingCseq " +
+                    "finalResponseSent=${incomingFinalResponseSent.get()} " +
+                    "awaitingAck=${incomingAcceptedAwaitingAck.get()} callStarted=${callStarted.get()}",
+            )
+
+            if (duplicateAnswered) {
+                val duplicateOmitFinalSdp = refreshedCall.hasEarlyMedia
+                val duplicateFinalBody = if (!duplicateOmitFinalSdp) {
+                    completeIncomingPreconditionAnswerSdp(refreshedCall.sdp, incomingCallId)
+                } else {
+                    ByteArray(0)
+                }
+                val duplicateFinalCall = if (!duplicateOmitFinalSdp && !duplicateFinalBody.contentEquals(refreshedCall.sdp)) {
+                    refreshedCall.copy(sdp = duplicateFinalBody)
+                } else {
+                    refreshedCall
+                }
+                currentCall = duplicateFinalCall
+
+                val duplicateFinalSdpHeaders = if (!duplicateOmitFinalSdp) {
+                    (
+                        "Content-Type: application/sdp\n" +
+                            "Content-Length: ${duplicateFinalBody.size}\n"
+                    ).toSipHeadersMap()
+                } else {
+                    "Content-Length: 0".toSipHeadersMap()
+                }
+                val duplicateFinalHeaders =
+                    duplicateFinalCall.callHeaders -
+                        "rseq" -
+                        "security-verify" -
+                        "p-access-network-info" -
+                        "content-type" -
+                        "content-length" +
+                        (
+                            "Session-Expires: 1800;refresher=uas\n" +
+                                "Contact: ${duplicateFinalCall.callHeaders["contact"]!!.first()}\n"
+                        ).toSipHeadersMap() +
+                        duplicateFinalSdpHeaders
+
+                val duplicateFinalResponse = SipResponse(
+                    statusCode = 200,
+                    statusString = "OK",
+                    headersParam = duplicateFinalHeaders,
+                    body = duplicateFinalBody,
+                    autofill = false,
+                )
+                val duplicateFinalBytes = duplicateFinalResponse.toByteArray()
+                Rlog.w(
+                    TAG,
+                    "Re-sending final 200 OK on duplicate incoming INVITE transaction: " +
+                        "callId=$incomingCallId cseq=$incomingCseq bytes=${duplicateFinalBytes.size}",
+                )
+                if (writeSipBytes(
+                        incomingResponseWriter,
+                        duplicateFinalBytes,
+                        "duplicate incoming INVITE final 200 OK callId=$incomingCallId cseq=$incomingCseq",
+                    )
+                ) {
+                    incomingFinalResponseSent.set(true)
+                    incomingAcceptedAwaitingAck.set(true)
+                } else {
+                    Rlog.w(
+                        TAG,
+                        "Failed to send final 200 OK on duplicate incoming INVITE transaction: " +
+                            "callId=$incomingCallId cseq=$incomingCseq",
+                    )
+                }
+                return 0
+            }
+
+            return 100
         }
 
         val activeCallId = existingCall?.callHeaders?.get("call-id")?.getOrNull(0)
@@ -4330,8 +4447,9 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 remoteContact = extractDestinationFromContact(request.headers["contact"]!![0]),
                 incomingResponseWriter = incomingResponseWriter,
             )
-            val installedIncomingCallId = currentCall?.callIdOrEmpty().orEmpty()
-            if (wasRecentlyTerminatedIncomingCall(incomingCallId) || installedIncomingCallId != incomingCallId) {
+            val installedIncomingCall = currentCall
+            val installedIncomingCallId = installedIncomingCall?.callIdOrEmpty().orEmpty()
+            if (wasRecentlyTerminatedIncomingCall(incomingCallId) || installedIncomingCallId != incomingCallId || installedIncomingCall !== currentCall) {
                 Rlog.w(TAG, "Aborting incoming ringing because Call-ID was terminated during setup: callId=$incomingCallId installed=$installedIncomingCallId")
                 if (installedIncomingCallId == incomingCallId) {
                     currentCall = null
