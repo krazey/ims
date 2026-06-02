@@ -28,6 +28,10 @@ class SipHandler(
 ) {
     companion object {
         private const val TAG = "PHH SipHandler"
+        // Keep RTP receive() short. Android/libcore synchronizes DatagramSocket
+        // send() and receive() on the same socket object; a long blocking receive
+        // can therefore stall uplink RTP sends for the whole SO_TIMEOUT window.
+        private const val RTP_SOCKET_RECEIVE_TIMEOUT_MS = 20
 
         private const val INCOMING_ACCEPT_IMS_ACCESS_CHANGE_GUARD_MS = 1_200L
     }
@@ -208,7 +212,23 @@ class SipHandler(
                 .firstOrNull()
                 .orEmpty()
 
-            synchronized(serverSocketUdp.socket) {
+            val channel = serverSocketUdp.socket.channel
+            if (channel != null) {
+                val sent = channel.send(
+                    java.nio.ByteBuffer.wrap(bytes),
+                    java.net.InetSocketAddress(remoteAddress, remotePort),
+                )
+                if (sent != bytes.size) {
+                    Rlog.w(
+                        TAG,
+                        "UDP SIP response partial send bytes=$sent expected=${bytes.size} " +
+                            "target=$remoteAddress:$remotePort firstLine=$firstLine",
+                    )
+                }
+            } else {
+                // Fallback for sockets not backed by a DatagramChannel. This can still
+                // contend with receive(), but keeps the writer functional on all socket
+                // construction paths.
                 serverSocketUdp.socket.send(
                     DatagramPacket(bytes, bytes.size, remoteAddress, remotePort),
                 )
@@ -2917,7 +2937,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 reconnectIms("outgoing RTP network.bindSocket failed")
                 return@thread
             }
-            rtpSocket.soTimeout = 2000
+            rtpSocket.soTimeout = RTP_SOCKET_RECEIVE_TIMEOUT_MS
             // Connect later once the remote RTP address/port is known from SDP.
             Rlog.d(TAG, "RTP socket created for outgoing call: local=${rtpSocket.localAddress}:${rtpSocket.localPort} timeout=${rtpSocket.soTimeout}")
 
@@ -3731,7 +3751,11 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 try {
                 receiveCall.rtpSocket.receive(dgram)
             } catch (e: SocketTimeoutException) {
-                Rlog.w(TAG, "RTP receive timeout: outgoing=${receiveCall.outgoing} local=${receiveCall.rtpSocket.localAddress}:${receiveCall.rtpSocket.localPort} connected=${receiveCall.rtpSocket.isConnected} remote=${receiveCall.rtpRemoteAddr}:${receiveCall.rtpRemotePort} callStopped=${callStopped.get()} genMismatch=${callGeneration.get() != gen}")
+                // Expected idle receive window. Keep looping, but do not
+                // hold the DatagramSocket monitor for seconds or spam logs.
+                if (callStopped.get() || callGeneration.get() != gen || receiveCall.rtpSocket.isClosed) {
+                    break
+                }
                 continue
             } catch (e: SocketException) {
                 if (callStopped.get() || callGeneration.get() != gen || receiveCall.rtpSocket.isClosed) {
