@@ -27,12 +27,60 @@ import java.lang.Object
 import me.phh.sip.SipHandler
 import me.phh.sip.randomBytes
 import me.phh.sip.toHex
+import android.telephony.AccessNetworkConstants
+import android.telephony.NetworkRegistrationInfo
 
 // frameworks/base/telephony/java/android/telephony/ims/feature/MmTelFeature.java
 // We extend it through java once because kotlin cannot override
 // changeEnabledCapabilities that has a protected (CapabilityCallbackProxy)
 // argument. See this stackoverflow link for why we cannot do it directly:
 // https://stackoverflow.com/questions/49284094/inheritance-from-java-class-with-a-public-method-accepting-a-protected-class-in/49287402#49287402
+private fun ServiceState.phhRegisteredPlmnForIms(): String? {
+    return networkRegistrationInfoList
+        .firstOrNull { !it.registeredPlmn.isNullOrEmpty() }
+        ?.registeredPlmn
+}
+
+private fun ServiceState.isCellularReadyForPhhIms(
+    registeredPlmn: String? = phhRegisteredPlmnForIms(),
+): Boolean {
+    return state == ServiceState.STATE_IN_SERVICE && registeredPlmn != null
+}
+
+private fun ServiceState.phhIwlanRegistrationForIms(): NetworkRegistrationInfo? {
+    return getNetworkRegistrationInfo(
+        NetworkRegistrationInfo.DOMAIN_PS,
+        AccessNetworkConstants.TRANSPORT_TYPE_WLAN,
+    )
+}
+
+private fun ServiceState.isIwlanReadyForPhhIms(): Boolean {
+    val iwlanRegistration = phhIwlanRegistrationForIms() ?: return false
+
+    val iwlanRegistered = iwlanRegistration.isNetworkRegistered
+
+    val iwlanRat =
+        iwlanRegistration.accessNetworkTechnology == TelephonyManager.NETWORK_TYPE_IWLAN
+
+    return iwlanRegistered && iwlanRat
+}
+
+private fun ServiceState.isReadyForPhhIms(
+    registeredPlmn: String? = phhRegisteredPlmnForIms(),
+): Boolean {
+    return isCellularReadyForPhhIms(registeredPlmn) || isIwlanReadyForPhhIms()
+}
+
+private fun ServiceState.phhImsReadyDebug(
+    registeredPlmn: String? = phhRegisteredPlmnForIms(),
+): String {
+    val iwlanRegistration = phhIwlanRegistrationForIms()
+
+    return "state=$state registeredPlmn=$registeredPlmn " +
+        "iwlanReg=${iwlanRegistration?.networkRegistrationState} " +
+        "iwlanRat=${iwlanRegistration?.accessNetworkTechnology}"
+}
+
 class PhhMmTelFeature(
     val slotId: Int,
     initialSubId: Int = SubscriptionManager.INVALID_SUBSCRIPTION_ID,
@@ -115,15 +163,13 @@ class PhhMmTelFeature(
     }
 
     private fun markReadyFromServiceState(serviceState: ServiceState, reason: String): Boolean {
-        val registeredPlmn = serviceState.networkRegistrationInfoList
-            .firstOrNull { !it.registeredPlmn.isNullOrEmpty() }
-            ?.registeredPlmn
+        val registeredPlmn = serviceState.phhRegisteredPlmnForIms()
 
-        if (serviceState.state != ServiceState.STATE_IN_SERVICE || registeredPlmn == null) {
+        if (!serviceState.isReadyForPhhIms(registeredPlmn)) {
             Rlog.d(
                 TAG,
                 "$slotId not ready for IMS after $reason: " +
-                    "state=${serviceState.state} registeredPlmn=$registeredPlmn"
+                    serviceState.phhImsReadyDebug(registeredPlmn)
             )
             return false
         }
@@ -132,7 +178,7 @@ class PhhMmTelFeature(
             Rlog.d(
                 TAG,
                 "$slotId ready for IMS after $reason: " +
-                    "subId=${resolveSubIdForSlot()} registeredPlmn=$registeredPlmn"
+                    "subId=${resolveSubIdForSlot()} " + serviceState.phhImsReadyDebug(registeredPlmn)
             )
             featureState = STATE_READY
         }
