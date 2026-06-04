@@ -2223,8 +2223,150 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         val rtpSocket: DatagramSocket,
         val body: ByteArray,
         val retriedAfter422: AtomicBoolean = AtomicBoolean(false),
+        val retriedAfterIllegalSdp: AtomicBoolean = AtomicBoolean(false),
         val cancelSent: AtomicBoolean = AtomicBoolean(false),
     )
+
+
+    // illegal SDP conservative retry: retry once only when the SBC explicitly rejects the SDP body.
+    private fun responseWarnsIllegalSdp(response: SipResponse): Boolean {
+        if (response.statusCode != 400) return false
+        val warningValues = response.headers.entries
+            .filter { it.key.equals("warning", ignoreCase = true) }
+            .flatMap { it.value }
+        return warningValues.any { warning ->
+            warning.contains("SDP is illegal", ignoreCase = true) ||
+                warning.contains("illegal SDP", ignoreCase = true)
+        }
+    }
+
+    private fun removeSipHeaderToken(
+        headers: SipHeadersMap,
+        headerName: String,
+        token: String,
+    ): SipHeadersMap {
+        val values = headers.entries
+            .filter { it.key.equals(headerName, ignoreCase = true) }
+            .flatMap { it.value }
+        if (values.isEmpty()) return headers
+
+        val filteredValues = values.mapNotNull { value ->
+            val keptTokens = value.split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() && !it.equals(token, ignoreCase = true) }
+            if (keptTokens.isEmpty()) null else keptTokens.joinToString(", ")
+        }
+        val strippedHeaders = headers.filterKeys { !it.equals(headerName, ignoreCase = true) }
+        return if (filteredValues.isEmpty()) {
+            strippedHeaders
+        } else {
+            strippedHeaders + (headerName.lowercase() to filteredValues)
+        }
+    }
+
+    private fun outgoingInviteIllegalSdpRetryHeaders(
+        headers: SipHeadersMap,
+        retryCseq: Int,
+    ): SipHeadersMap {
+        var retryHeaders = headers.filterKeys {
+            !it.equals("cseq", ignoreCase = true) &&
+                !it.equals("content-length", ignoreCase = true)
+        } + ("cseq" to listOf("$retryCseq INVITE"))
+        retryHeaders = removeSipHeaderToken(retryHeaders, "supported", "precondition")
+        retryHeaders = removeSipHeaderToken(retryHeaders, "require", "precondition")
+        return retryHeaders
+    }
+
+    private fun conservativeAmrNbOutgoingInviteSdpBody(originalBody: ByteArray): ByteArray {
+        val originalLines = originalBody
+            .toString(Charsets.US_ASCII)
+            .split(Regex("\r?\n"))
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
+        fun line(prefix: String): String? = originalLines.firstOrNull { it.startsWith(prefix) }
+        val localHost = socket.gLocalAddr().hostAddress ?: "0.0.0.0"
+        val ipType = if (localHost.contains(':')) "IP6" else "IP4"
+        val audioPort = line("m=audio ")?.split(Regex("\\s+"))?.getOrNull(1) ?: "0"
+
+        val retryLines = listOf(
+            line("v=") ?: "v=0",
+            line("o=") ?: "o=- 1 2 IN $ipType $localHost",
+            line("s=") ?: "s=phh voice call",
+            line("c=") ?: "c=IN $ipType $localHost",
+            "b=AS:38",
+            "b=RS:0",
+            "b=RR:0",
+            line("t=") ?: "t=0 0",
+            "m=audio $audioPort RTP/AVP 97 100",
+            "b=AS:38",
+            "b=RS:0",
+            "b=RR:0",
+            "a=ptime:20",
+            "a=maxptime:240",
+            "a=rtpmap:97 AMR/8000/1",
+            "a=fmtp:97 mode-change-capability=2;octet-align=0;max-red=0",
+            "a=rtpmap:100 telephone-event/8000",
+            "a=fmtp:100 0-15",
+            "a=sendrecv",
+        )
+        return (retryLines.joinToString("\r\n") + "\r\n").toByteArray(Charsets.US_ASCII)
+    }
+
+    private fun retryOutgoingInviteAfterIllegalSdp(
+        pending: PendingOutgoingInvite,
+        response: SipResponse,
+        outgoingDialogNextCseq: AtomicInteger,
+    ): Boolean {
+        if (!responseWarnsIllegalSdp(response)) return false
+        if (pending.cancelSent.get()) {
+            Rlog.w(TAG, "Not retrying outgoing INVITE after illegal SDP because CANCEL was already sent callId=${pending.callId}")
+            return false
+        }
+        if (!pending.retriedAfterIllegalSdp.compareAndSet(false, true)) {
+            Rlog.w(TAG, "Not retrying outgoing INVITE after illegal SDP twice callId=${pending.callId}")
+            return false
+        }
+
+        val oldCseqHeader = pending.headers.entries
+            .firstOrNull { it.key.equals("cseq", ignoreCase = true) }
+            ?.value
+            ?.getOrNull(0)
+            ?: "1 INVITE"
+        val oldCseq = oldCseqHeader.substringBefore(" ").trim().toIntOrNull() ?: 1
+        val retryCseq = oldCseq + 1
+        val retryBody = conservativeAmrNbOutgoingInviteSdpBody(pending.body)
+        val retryHeaders = outgoingInviteIllegalSdpRetryHeaders(pending.headers, retryCseq)
+        val retryInvite = SipRequest(
+            SipMethod.INVITE,
+            pending.destination,
+            retryHeaders,
+            retryBody,
+        )
+
+        pendingOutgoingInvite = pending.copy(
+            headers = retryInvite.headers,
+            body = retryBody,
+        )
+
+        val desiredNextCseq = retryCseq + 1
+        while (true) {
+            val oldNextCseq = outgoingDialogNextCseq.get()
+            if (oldNextCseq >= desiredNextCseq ||
+                outgoingDialogNextCseq.compareAndSet(oldNextCseq, desiredNextCseq)
+            ) break
+        }
+
+        Rlog.w(
+            TAG,
+            "Retrying outgoing INVITE after 400 illegal SDP with conservative AMR-NB offer " +
+                "callId=${pending.callId} oldCseq=$oldCseq retryCseq=$retryCseq " +
+                "oldBytes=${pending.body.size} retryBytes=${retryBody.size} " +
+                imsDualSimDebugContext(),
+        )
+        writeSipBytesWithFlush(socket.gWriter(), "SipHandler illegal-sdp retry INVITE", retryInvite.toByteArray())
+        return true
+    }
 
 
     private fun retryOutgoingInviteAfter422(
@@ -3464,6 +3606,14 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                         if (activeCallId != failedCallId && pendingCallId != failedCallId) {
                             Rlog.w(TAG, "Ignoring stale outgoing dialog failure: status=${resp.statusCode} ${resp.statusString} cseq=$failedCseq callId=$failedCallId active=$activeCallId pending=$pendingCallId")
                             return@setResponseCallback true
+                        }
+
+                        if (failedPendingInvite != null &&
+                            failedPendingInvite.callId == failedCallId &&
+                            failedCseq.contains("INVITE", ignoreCase = true) &&
+                            retryOutgoingInviteAfterIllegalSdp(failedPendingInvite, resp, outgoingDialogNextCseq)
+                        ) {
+                            return@setResponseCallback false
                         }
 
                         Rlog.w(TAG, "Outgoing dialog request failed: status=${resp.statusCode} ${resp.statusString} cseq=$failedCseq callId=$failedCallId")
