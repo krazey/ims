@@ -2226,6 +2226,29 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         return sorted.firstOrNull()
     }
 
+
+    private fun connectUpdateRtpSocketIfNeeded(
+        call: Call,
+        rtpRemoteAddr: InetAddress,
+        rtpRemotePort: Int,
+        requestCallId: String,
+    ) {
+        try {
+            if (!call.rtpSocket.isConnected ||
+                call.rtpSocket.inetAddress != rtpRemoteAddr ||
+                call.rtpSocket.port != rtpRemotePort) {
+                call.rtpSocket.connect(rtpRemoteAddr, rtpRemotePort)
+                Rlog.d(
+                    TAG,
+                    "UPDATE connected RTP socket to ${rtpRemoteAddr}:${rtpRemotePort} " +
+                        "local=${call.rtpSocket.localAddress}:${call.rtpSocket.localPort} callId=$requestCallId",
+                )
+            }
+        } catch (t: Throwable) {
+            Rlog.w(TAG, "Failed to connect RTP socket from UPDATE to ${rtpRemoteAddr}:${rtpRemotePort} callId=$requestCallId", t)
+        }
+    }
+
     fun handleUpdate(request: SipRequest): Int {
         val requestCallId = request.callIdOrEmpty()
         val requestCseq = request.headers["cseq"]?.getOrNull(0).orEmpty()
@@ -2292,20 +2315,12 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         }
         val (dtmfTrack, dtmfTrackDesc) = dtmf
 
-        try {
-            if (!call.rtpSocket.isConnected ||
-                call.rtpSocket.inetAddress != rtpRemoteAddr ||
-                call.rtpSocket.port != rtpRemotePort) {
-                call.rtpSocket.connect(rtpRemoteAddr, rtpRemotePort)
-                Rlog.d(
-                    TAG,
-                    "UPDATE connected RTP socket to ${rtpRemoteAddr}:${rtpRemotePort} " +
-                        "local=${call.rtpSocket.localAddress}:${call.rtpSocket.localPort} callId=$requestCallId",
-                )
-            }
-        } catch (t: Throwable) {
-            Rlog.w(TAG, "Failed to connect RTP socket from UPDATE to ${rtpRemoteAddr}:${rtpRemotePort} callId=$requestCallId", t)
-        }
+        connectUpdateRtpSocketIfNeeded(
+            call = call,
+            rtpRemoteAddr = rtpRemoteAddr,
+            rtpRemotePort = rtpRemotePort,
+            requestCallId = requestCallId,
+        )
 
         val allTracks = listOf(amrTrack, dtmfTrack)
         val ipType = if (socket.gLocalAddr() is Inet6Address) "IP6" else "IP4"
