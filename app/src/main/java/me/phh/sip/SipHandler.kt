@@ -1509,21 +1509,11 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         )
     }
 
-    fun connect() {
-        if (!prepareImsEndpointForConnect()) {
-            return
-        }
 
-        Rlog.w(TAG, "Connecting with address ${imsDualSimDebugContext("selectedLocal=$localAddr selectedPcscf=$pcscfAddr")}")
-
-        val clientIpsecSettings = allocateClientIpsecSettingsForRegister()
-        ipsecSettings = clientIpsecSettings
-        ipsecResourcesClosed = false
-        val clientSpiC = clientIpsecSettings.clientSpiC
-        val clientSpiS = clientIpsecSettings.clientSpiS
-
-        setupPlainSipSocketsAndSendInitialRegister()
-
+    private fun authenticateRegisterFromPlainChallenge(
+        clientSpiS: IpSecManager.SecurityParameterIndex,
+        clientSpiC: IpSecManager.SecurityParameterIndex,
+    ) {
         val plainRegisterChallenge = readPlainRegisterChallenge() ?: return
         var plainRegReply = plainRegisterChallenge.plainRegReply
         var registerChallenge = plainRegisterChallenge.registerChallenge
@@ -1557,6 +1547,27 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             registerRealmDecision = registerRealmDecision,
             registerChallenge = registerChallenge,
             akaResult = akaResult,
+        )
+    }
+
+    fun connect() {
+        if (!prepareImsEndpointForConnect()) {
+            return
+        }
+
+        Rlog.w(TAG, "Connecting with address ${imsDualSimDebugContext("selectedLocal=$localAddr selectedPcscf=$pcscfAddr")}")
+
+        val clientIpsecSettings = allocateClientIpsecSettingsForRegister()
+        ipsecSettings = clientIpsecSettings
+        ipsecResourcesClosed = false
+        val clientSpiC = clientIpsecSettings.clientSpiC
+        val clientSpiS = clientIpsecSettings.clientSpiS
+
+        setupPlainSipSocketsAndSendInitialRegister()
+
+        authenticateRegisterFromPlainChallenge(
+            clientSpiS = clientSpiS,
+            clientSpiC = clientSpiC,
         )
     }
 
