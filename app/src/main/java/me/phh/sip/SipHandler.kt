@@ -1209,6 +1209,13 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         }
     }
 
+
+    private fun connectProtectedSipSocketAndRegister(portS: Int) {
+        connectSipSocketWithWatchdog(socket, portS, "IPsec authenticated")
+        updateCommonHeaders(socket)
+        register()
+    }
+
     fun connect() {
         if (!prepareImsEndpointForConnect()) {
             return
@@ -1351,9 +1358,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             serverSocket.enableIpsec(ipSecManager, serverInTransform, serverOutTransform)
             serverSocketUdp.enableIpsec(ipSecManager, serverInTransform, serverOutTransform)
         }
-        connectSipSocketWithWatchdog(socket, portS, "IPsec authenticated")
-        updateCommonHeaders(socket)
-        register()
+        connectProtectedSipSocketAndRegister(portS)
 
         Rlog.d(TAG, "Waiting for authenticated SIP REGISTER response")
         val regReply = readRegisterReplyOrRetry(
