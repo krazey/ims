@@ -1511,6 +1511,32 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         setRequestCallback(SipMethod.UPDATE, ::handleUpdate)
     }
 
+
+    private fun handleImsNetworkLost(
+        callback: ConnectivityManager.NetworkCallback,
+        lostNetwork: Network,
+    ) {
+        Rlog.d(TAG, "IMS network lost ${imsDualSimDebugContext("lost=$lostNetwork")}")
+        if (this::network.isInitialized && network == lostNetwork) {
+            try {
+                connectivityManager.unregisterNetworkCallback(callback)
+                if (imsNetworkCallback === callback) {
+                    imsNetworkCallback = null
+                }
+                Rlog.w(TAG, "Unregistered stale IMS NetworkCallback after loss to avoid immediate GERAN IMS APN retry")
+            } catch (t: Throwable) {
+                Rlog.d(TAG, "Unregistering stale IMS NetworkCallback failed", t)
+            }
+            Rlog.w(TAG, "Current IMS network was lost; dropping SIP state")
+            Rlog.w(TAG, "Invalidating IMS reconnect generation: current IMS network lost")
+            reconnectController.invalidatePendingReconnects("IMS network state changed")
+            dropImsConnection("IMS network lost")
+            abandonnedBecauseOfNoPcscf = true
+            imsFailureCallback?.invoke()
+            scheduleImsNetworkRequestRestart("IMS network lost $lostNetwork")
+        }
+    }
+
     fun getVolteNetwork() {
         // TODO add something similar for VoWifi ipsec tunnel?
         Rlog.d(TAG, "Requesting IMS network ${imsDualSimDebugContext()}")
@@ -1531,25 +1557,10 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                 }
 
                 override fun onLost(lostNetwork: Network) {
-                    Rlog.d(TAG, "IMS network lost ${imsDualSimDebugContext("lost=$lostNetwork")}")
-                    if (this@SipHandler::network.isInitialized && network == lostNetwork) {
-                        try {
-                    connectivityManager.unregisterNetworkCallback(this)
-                        if (imsNetworkCallback === this) {
-                            imsNetworkCallback = null
-                        }
-                    Rlog.w(TAG, "Unregistered stale IMS NetworkCallback after loss to avoid immediate GERAN IMS APN retry")
-                } catch (t: Throwable) {
-                    Rlog.d(TAG, "Unregistering stale IMS NetworkCallback failed", t)
-                }
-                Rlog.w(TAG, "Current IMS network was lost; dropping SIP state")
-                        Rlog.w(TAG, "Invalidating IMS reconnect generation: current IMS network lost")
-                        reconnectController.invalidatePendingReconnects("IMS network state changed")
-                        dropImsConnection("IMS network lost")
-                        abandonnedBecauseOfNoPcscf = true
-                        imsFailureCallback?.invoke()
-                scheduleImsNetworkRequestRestart("IMS network lost $lostNetwork")
-                    }
+                    handleImsNetworkLost(
+                        callback = this,
+                        lostNetwork = lostNetwork,
+                    )
                 }
 
                 override fun onBlockedStatusChanged(network: Network, blocked: Boolean) {
