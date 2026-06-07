@@ -1054,6 +1054,16 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         }
     }
 
+
+    private fun handleAuthenticatedRegisterSuccess(regReply: SipResponse) {
+        reconnectController.markConnected()
+
+        installSipCallbacks()
+        handleResponse(regReply)
+
+        startSipReaderLoops()
+    }
+
     fun connect() {
         abandonnedBecauseOfNoPcscf = false
         resetRegistrationStateForConnect()
@@ -1368,12 +1378,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                             "for this IMS session",
                     )
 
-                    reconnectController.markConnected()
-
-                    installSipCallbacks()
-                    handleResponse(canonicalRegReply)
-
-                    startSipReaderLoops()
+                    handleAuthenticatedRegisterSuccess(canonicalRegReply)
                     return
                 }
 
@@ -1387,12 +1392,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             return
         }
 
-        reconnectController.markConnected()
-
-        installSipCallbacks()
-        handleResponse(regReply)
-
-        startSipReaderLoops()
+        handleAuthenticatedRegisterSuccess(regReply)
     }
 
     private fun startSipReaderLoops() {
