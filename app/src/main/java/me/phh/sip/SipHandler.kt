@@ -1537,6 +1537,30 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         }
     }
 
+
+    private fun handleImsNetworkCapabilitiesChanged(
+        changedNetwork: Network,
+        networkCapabilities: NetworkCapabilities,
+    ) {
+        Rlog.d(TAG, "IMS network capabilities changed ${imsDualSimDebugContext("capabilities=$networkCapabilities")}")
+        val isCurrentImsNetwork =
+            this::network.isInitialized &&
+                changedNetwork == network
+
+        if (isCurrentImsNetwork) {
+            imsTransportGuard.onCapabilitiesChanged(changedNetwork, networkCapabilities)
+        }
+
+        if (
+            isCurrentImsNetwork &&
+                hasPendingIncomingCallForAcceptGuard()
+        ) {
+            noteImsAccessChangeDuringPendingIncomingCall(
+                "IMS network capabilities changed caps=$networkCapabilities",
+            )
+        }
+    }
+
     fun getVolteNetwork() {
         // TODO add something similar for VoWifi ipsec tunnel?
         Rlog.d(TAG, "Requesting IMS network ${imsDualSimDebugContext()}")
@@ -1568,25 +1592,12 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                 }
                 override fun onCapabilitiesChanged(
                     network: Network,
-                    networkCapabilities: NetworkCapabilities
+                    networkCapabilities: NetworkCapabilities,
                 ) {
-                    Rlog.d(TAG, "IMS network capabilities changed ${imsDualSimDebugContext("capabilities=$networkCapabilities")}")
-                    val isCurrentImsNetwork =
-                        this@SipHandler::network.isInitialized &&
-                            network == this@SipHandler.network
-
-                    if (isCurrentImsNetwork) {
-                        imsTransportGuard.onCapabilitiesChanged(network, networkCapabilities)
-                    }
-
-                    if (
-                        isCurrentImsNetwork &&
-                            hasPendingIncomingCallForAcceptGuard()
-                    ) {
-                        noteImsAccessChangeDuringPendingIncomingCall(
-                            "IMS network capabilities changed caps=$networkCapabilities",
-                        )
-                    }
+                    handleImsNetworkCapabilitiesChanged(
+                        changedNetwork = network,
+                        networkCapabilities = networkCapabilities,
+                    )
                 }
 
                 override fun onLosing(network: Network, maxMsToLive: Int) {
