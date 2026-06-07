@@ -1198,6 +1198,17 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                 }
         }
 
+
+    private fun readAuthenticatedRegisterReply(): SipMessage? {
+        return if (socket is SipConnectionTcp) {
+            socket.gReader().parseMessage()
+        } else if (socket is SipConnectionUdp) {
+            serverSocketUdp.gReader().parseMessage()
+        } else {
+            socket.gReader().parseMessage()
+        }
+    }
+
     fun connect() {
         if (!prepareImsEndpointForConnect()) {
             return
@@ -1345,17 +1356,12 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         register()
 
         Rlog.d(TAG, "Waiting for authenticated SIP REGISTER response")
-        val authenticatedRegisterReader =
-            if (socket is SipConnectionTcp) socket.gReader()
-            else if (socket is SipConnectionUdp) serverSocketUdp.gReader()
-            else socket.gReader()
-
         val regReply = readRegisterReplyOrRetry(
             readFailureLog = "Authenticated SIP REGISTER response read failed, aborting SIP",
             readFailureReason = "Authenticated SIP REGISTER response read failed",
             noResponseLog = "Authenticated SIP REGISTER got EOF/no response, aborting SIP",
             noResponseReason = "Authenticated SIP REGISTER got EOF/no response",
-            readReply = { authenticatedRegisterReader.parseMessage() },
+            readReply = { readAuthenticatedRegisterReply() },
         ) ?: return
         Rlog.d(TAG, "Received $regReply")
 
@@ -1393,7 +1399,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                     readFailureReason = "Canonical REGISTER realm retry response read failed",
                     noResponseLog = "Canonical REGISTER realm retry got EOF/no response, aborting SIP",
                     noResponseReason = "Canonical REGISTER realm retry got EOF/no response",
-                    readReply = { authenticatedRegisterReader.parseMessage() },
+                    readReply = { readAuthenticatedRegisterReply() },
                 ) ?: return
 
                 Rlog.d(TAG, "Received after canonical REGISTER realm retry $canonicalRegReply")
