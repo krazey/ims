@@ -1558,11 +1558,8 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         return clientIpsecSettings
     }
 
-    fun connect() {
-        if (!prepareImsEndpointForConnect()) {
-            return
-        }
 
+    private fun connectToPreparedImsEndpoint() {
         Rlog.w(TAG, "Connecting with address ${imsDualSimDebugContext("selectedLocal=$localAddr selectedPcscf=$pcscfAddr")}")
 
         val clientIpsecSettings = prepareClientIpsecSettingsForRegister()
@@ -1573,6 +1570,14 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             clientSpiS = clientIpsecSettings.clientSpiS,
             clientSpiC = clientIpsecSettings.clientSpiC,
         )
+    }
+
+    fun connect() {
+        if (!prepareImsEndpointForConnect()) {
+            return
+        }
+
+        connectToPreparedImsEndpoint()
     }
 
     private fun startSipReaderLoops() {
