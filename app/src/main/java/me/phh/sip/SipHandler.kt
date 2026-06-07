@@ -1160,6 +1160,44 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         return plainRegReply
     }
 
+
+    private fun applyRegisterRealmDecision(challengeRealm: String) =
+        SipRegisterNegotiationPolicy.registerRealmDecision(
+            defaultRealm = realm,
+            challengeRealm = challengeRealm,
+            preferCanonicalAfterPromoted494 = preferCanonicalRegisterRealmAfter494,
+        ).also { registerRealmDecision ->
+            val registerDigestUriRealm = registerRealmDecision.targetRealm
+            if (registerRealmDecision.forcedCanonical && registerRealmDecision.hasPromotedCandidate) {
+                Rlog.w(
+                    TAG,
+                    "Keeping challenged REGISTER realm auth-only after previous promoted 494 success: " +
+                        "oldUri=sip:$realm promotedUri=sip:${registerRealmDecision.candidateRealm} " +
+                        "challengeRealm=$challengeRealm",
+                )
+            } else if (registerRealmDecision.usesPromotedChallengeRealm) {
+                Rlog.w(
+                    TAG,
+                    "Using challenged REGISTER realm as request/digest URI: " +
+                        "oldUri=sip:$realm newUri=sip:$registerDigestUriRealm " +
+                        "challengeRealm=$challengeRealm",
+                )
+            }
+            registerTargetRealm = registerDigestUriRealm
+            registerSecurityClientOverride =
+                if (registerTargetRealm != realm) {
+                    selectedSecurityClientForPromotedRegister?.also {
+                        Rlog.w(
+                            TAG,
+                            "Applying selected Security-Client for promoted REGISTER target: " +
+                                "defaultRealm=$realm targetRealm=$registerTargetRealm securityClient=$it",
+                        )
+                    }
+                } else {
+                    null
+                }
+        }
+
     fun connect() {
         if (!prepareImsEndpointForConnect()) {
             return
@@ -1229,40 +1267,8 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
         plainSocket.close()
 
-        val registerRealmDecision = SipRegisterNegotiationPolicy.registerRealmDecision(
-            defaultRealm = realm,
-            challengeRealm = registerChallenge.realm,
-            preferCanonicalAfterPromoted494 = preferCanonicalRegisterRealmAfter494,
-        )
+        val registerRealmDecision = applyRegisterRealmDecision(registerChallenge.realm)
         val registerDigestUriRealm = registerRealmDecision.targetRealm
-        if (registerRealmDecision.forcedCanonical && registerRealmDecision.hasPromotedCandidate) {
-            Rlog.w(
-                TAG,
-                "Keeping challenged REGISTER realm auth-only after previous promoted 494 success: " +
-                    "oldUri=sip:$realm promotedUri=sip:${registerRealmDecision.candidateRealm} " +
-                    "challengeRealm=${registerChallenge.realm}",
-            )
-        } else if (registerRealmDecision.usesPromotedChallengeRealm) {
-            Rlog.w(
-                TAG,
-                "Using challenged REGISTER realm as request/digest URI: " +
-                    "oldUri=sip:$realm newUri=sip:$registerDigestUriRealm " +
-                    "challengeRealm=${registerChallenge.realm}",
-            )
-        }
-        registerTargetRealm = registerDigestUriRealm
-        registerSecurityClientOverride =
-            if (registerTargetRealm != realm) {
-                selectedSecurityClientForPromotedRegister?.also {
-                    Rlog.w(
-                        TAG,
-                        "Applying selected Security-Client for promoted REGISTER target: " +
-                            "defaultRealm=$realm targetRealm=$registerTargetRealm securityClient=$it",
-                    )
-                }
-            } else {
-                null
-            }
         akaDigest = SipRegistrationDigestFactory.create(
             user = user,
             realm = registerChallenge.realm,
