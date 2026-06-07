@@ -1089,7 +1089,8 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         return reply
     }
 
-    fun connect() {
+
+    private fun prepareImsEndpointForConnect(): Boolean {
         abandonnedBecauseOfNoPcscf = false
         resetRegistrationStateForConnect()
         Rlog.d(TAG, "Trying to connect to SIP server ${imsDualSimDebugContext()}")
@@ -1099,7 +1100,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             Rlog.w(TAG, "No link properties for IMS network")
             imsFailureCallback?.invoke()
             scheduleImsNetworkRequestRestart("No link properties for current IMS network")
-            return
+            return false
         }
         imsRegistrationTech = detectRegistrationTech(lp)
         Rlog.d(TAG, "IMS registration tech ${registrationTechName(imsRegistrationTech)} interface=${lp.interfaceName} caps=${connectivityManager.getNetworkCapabilities(network)}")
@@ -1112,13 +1113,21 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
             ImsNetworkEndpointResolution.WaitingForPcscf -> {
                 abandonnedBecauseOfNoPcscf = true
-                return
+                return false
             }
 
             ImsNetworkEndpointResolution.NoLocalAddress -> {
                 failConnectAndRetry("No usable local address on IMS link properties")
-                return
+                return false
             }
+        }
+
+        return true
+    }
+
+    fun connect() {
+        if (!prepareImsEndpointForConnect()) {
+            return
         }
 
         Rlog.w(TAG, "Connecting with address ${imsDualSimDebugContext("selectedLocal=$localAddr selectedPcscf=$pcscfAddr")}")
