@@ -1550,6 +1550,14 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         )
     }
 
+
+    private fun prepareClientIpsecSettingsForRegister(): SipIpsecSettings {
+        val clientIpsecSettings = allocateClientIpsecSettingsForRegister()
+        ipsecSettings = clientIpsecSettings
+        ipsecResourcesClosed = false
+        return clientIpsecSettings
+    }
+
     fun connect() {
         if (!prepareImsEndpointForConnect()) {
             return
@@ -1557,17 +1565,13 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
         Rlog.w(TAG, "Connecting with address ${imsDualSimDebugContext("selectedLocal=$localAddr selectedPcscf=$pcscfAddr")}")
 
-        val clientIpsecSettings = allocateClientIpsecSettingsForRegister()
-        ipsecSettings = clientIpsecSettings
-        ipsecResourcesClosed = false
-        val clientSpiC = clientIpsecSettings.clientSpiC
-        val clientSpiS = clientIpsecSettings.clientSpiS
+        val clientIpsecSettings = prepareClientIpsecSettingsForRegister()
 
         setupPlainSipSocketsAndSendInitialRegister()
 
         authenticateRegisterFromPlainChallenge(
-            clientSpiS = clientSpiS,
-            clientSpiC = clientSpiC,
+            clientSpiS = clientIpsecSettings.clientSpiS,
+            clientSpiC = clientIpsecSettings.clientSpiC,
         )
     }
 
