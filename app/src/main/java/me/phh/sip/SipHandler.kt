@@ -1354,6 +1354,57 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         )
     }
 
+
+    private fun retryCanonicalRegisterAfterPromotedRealm494(
+        registerChallenge: SipRegisterChallenge,
+        akaResult: SipAkaResult,
+    ) {
+        Rlog.w(
+            TAG,
+            "Promoted REGISTER realm rejected with 494; retrying once with canonical realm: " +
+                "promotedUri=sip:$registerTargetRealm canonicalUri=sip:$realm " +
+                "challengeRealm=${registerChallenge.realm}",
+        )
+
+        registerTargetRealm = realm
+        registerSecurityClientOverride = null
+        akaDigest = SipRegistrationDigestFactory.create(
+            user = user,
+            realm = registerChallenge.realm,
+            uri = "sip:$realm",
+            nonceB64 = registerChallenge.nonceB64,
+            opaque = registerChallenge.opaque,
+            akaResult = akaResult,
+            useNonsessAka = requireNonsessAka || registerChallenge.qop == null,
+        )
+        register()
+
+        Rlog.d(TAG, "Waiting for canonical REGISTER realm retry response")
+        val canonicalRegReply = readRegisterReplyOrRetry(
+            readFailureLog = "Canonical REGISTER realm retry response read failed, aborting SIP",
+            readFailureReason = "Canonical REGISTER realm retry response read failed",
+            noResponseLog = "Canonical REGISTER realm retry got EOF/no response, aborting SIP",
+            noResponseReason = "Canonical REGISTER realm retry got EOF/no response",
+            readReply = { readAuthenticatedRegisterReply() },
+        ) ?: return
+
+        Rlog.d(TAG, "Received after canonical REGISTER realm retry $canonicalRegReply")
+        if (canonicalRegReply is SipResponse && canonicalRegReply.statusCode == 200) {
+            preferCanonicalRegisterRealmAfter494 = true
+            Rlog.w(
+                TAG,
+                "Canonical REGISTER realm retry accepted; keeping challenged realms auth-only " +
+                    "for this IMS session",
+            )
+
+            handleAuthenticatedRegisterSuccess(canonicalRegReply)
+            return
+        }
+
+        Rlog.w(TAG, "Canonical REGISTER realm retry did not return 200, aborting SIP")
+        failConnectAndRetry("Canonical REGISTER realm retry did not return 200")
+    }
+
     fun connect() {
         if (!prepareImsEndpointForConnect()) {
             return
@@ -1426,50 +1477,10 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                     alreadyPreferCanonical = preferCanonicalRegisterRealmAfter494,
                 )
             ) {
-                Rlog.w(
-                    TAG,
-                    "Promoted REGISTER realm rejected with 494; retrying once with canonical realm: " +
-                        "promotedUri=sip:$registerTargetRealm canonicalUri=sip:$realm " +
-                        "challengeRealm=${registerChallenge.realm}",
-                )
-
-                registerTargetRealm = realm
-                registerSecurityClientOverride = null
-                akaDigest = SipRegistrationDigestFactory.create(
-                    user = user,
-                    realm = registerChallenge.realm,
-                    uri = "sip:$realm",
-                    nonceB64 = registerChallenge.nonceB64,
-                    opaque = registerChallenge.opaque,
+                retryCanonicalRegisterAfterPromotedRealm494(
+                    registerChallenge = registerChallenge,
                     akaResult = akaResult,
-                    useNonsessAka = requireNonsessAka || registerChallenge.qop == null,
                 )
-                register()
-
-                Rlog.d(TAG, "Waiting for canonical REGISTER realm retry response")
-                val canonicalRegReply = readRegisterReplyOrRetry(
-                    readFailureLog = "Canonical REGISTER realm retry response read failed, aborting SIP",
-                    readFailureReason = "Canonical REGISTER realm retry response read failed",
-                    noResponseLog = "Canonical REGISTER realm retry got EOF/no response, aborting SIP",
-                    noResponseReason = "Canonical REGISTER realm retry got EOF/no response",
-                    readReply = { readAuthenticatedRegisterReply() },
-                ) ?: return
-
-                Rlog.d(TAG, "Received after canonical REGISTER realm retry $canonicalRegReply")
-                if (canonicalRegReply is SipResponse && canonicalRegReply.statusCode == 200) {
-                    preferCanonicalRegisterRealmAfter494 = true
-                    Rlog.w(
-                        TAG,
-                        "Canonical REGISTER realm retry accepted; keeping challenged realms auth-only " +
-                            "for this IMS session",
-                    )
-
-                    handleAuthenticatedRegisterSuccess(canonicalRegReply)
-                    return
-                }
-
-                Rlog.w(TAG, "Canonical REGISTER realm retry did not return 200, aborting SIP")
-                failConnectAndRetry("Canonical REGISTER realm retry did not return 200")
                 return
             }
 
