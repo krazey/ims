@@ -2094,6 +2094,40 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         return 200
     }
 
+
+    private fun updateResponseWriterFor(request: SipRequest): java.io.OutputStream {
+        val updateCallId = request.headers.callIdOrNull()
+        return updateCallId?.let { dispatcher.writerForCallId(it) } ?: socket.gWriter()
+    }
+
+    private fun writeUpdateReply(
+        updateResponseWriter: java.io.OutputStream,
+        reply: SipResponse,
+    ) {
+        Rlog.d(TAG, "Replying to UPDATE with $reply")
+        synchronized(updateResponseWriter) {
+            updateResponseWriter.write(reply.toByteArray())
+        }
+    }
+
+    private fun okUpdateWithoutSdpResponse(
+        request: SipRequest,
+        requestCallId: String,
+    ): SipResponse {
+        return SipResponse(
+            statusCode = 200,
+            statusString = "OK",
+            headersParam = request.headers.filter { (k, _) ->
+                k in listOf("cseq", "via", "from", "to", "call-id")
+            } + """
+                Supported: 100rel, replaces, timer
+                Call-ID: $requestCallId
+                Content-Length: 0
+            """.toSipHeadersMap(),
+            autofill = false,
+        )
+    }
+
     fun handleUpdate(request: SipRequest): Int {
         val requestCallId = request.callIdOrEmpty()
         val requestCseq = request.headers["cseq"]?.getOrNull(0).orEmpty()
@@ -2105,15 +2139,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             return 481
         }
 
-        val updateCallId = request.headers.callIdOrNull()
-        val updateResponseWriter = updateCallId?.let { dispatcher.writerForCallId(it) } ?: socket.gWriter()
-
-        fun writeUpdateReply(reply: SipResponse) {
-            Rlog.d(TAG, "Replying to UPDATE with $reply")
-            synchronized(updateResponseWriter) {
-                updateResponseWriter.write(reply.toByteArray())
-            }
-        }
+        val updateResponseWriter = updateResponseWriterFor(request)
 
         val isSdp = request.headers["content-type"]
             ?.getOrNull(0)
@@ -2121,19 +2147,11 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             request.body.isNotEmpty()
 
         if (!isSdp) {
-            val reply = SipResponse(
-                statusCode = 200,
-                statusString = "OK",
-                headersParam = request.headers.filter { (k, _) ->
-                    k in listOf("cseq", "via", "from", "to", "call-id")
-                } + """
-                    Supported: 100rel, replaces, timer
-                    Call-ID: $requestCallId
-                    Content-Length: 0
-                """.toSipHeadersMap(),
-                autofill = false,
+            val reply = okUpdateWithoutSdpResponse(
+                request = request,
+                requestCallId = requestCallId,
             )
-            writeUpdateReply(reply)
+            writeUpdateReply(updateResponseWriter, reply)
             return 0
         }
 
@@ -2305,7 +2323,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             """.toSipHeadersMap(),
             body = answerSdp,
         )
-        writeUpdateReply(reply)
+        writeUpdateReply(updateResponseWriter, reply)
 
         if (!call.outgoing) {
             val myHeaders2 = call.callHeaders - "rseq" - "content-type" - "require"
