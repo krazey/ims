@@ -2128,6 +2128,67 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         )
     }
 
+
+    private data class UpdateSdpOffer(
+        val rtpRemoteAddr: InetAddress,
+        val rtpRemotePort: Int,
+        val offeredPayloads: Set<Int>,
+        val attributes: List<String>,
+    )
+
+    private fun parseUpdateSdpOffer(
+        request: SipRequest,
+        requestCallId: String,
+        requestCseq: String,
+    ): UpdateSdpOffer? {
+        val sdp = request.body
+            .toString(Charsets.UTF_8)
+            .split("[\\r\\n]+".toRegex())
+            .filter { it.isNotBlank() }
+
+        Rlog.d(TAG, "Handling UPDATE SDP offer: callId=$requestCallId cseq=$requestCseq sdp=$sdp")
+
+        fun sdpElement(command: String): String? {
+            val v = sdp.firstOrNull { it.startsWith("$command=") } ?: return null
+            return v.substring(2)
+        }
+
+        val sdpConnectionData = sdpElement("c")
+        val sdpMedia = sdpElement("m")
+        if (sdpConnectionData == null || sdpMedia == null) {
+            Rlog.w(TAG, "Rejecting UPDATE without usable c=/m= SDP: callId=$requestCallId cseq=$requestCseq")
+            return null
+        }
+
+        val rtpRemote = sdpConnectionData.split(" ").getOrNull(2)
+        val rtpRemoteAddr = rtpRemote?.let { InetAddress.getByName(it) }
+        val mediaParts = sdpMedia.trim().split("\\s+".toRegex())
+        val rtpRemotePort = mediaParts.getOrNull(1)?.toIntOrNull()
+        val offeredPayloads = mediaParts.drop(3).mapNotNull { it.toIntOrNull() }.toSet()
+
+        if (rtpRemoteAddr == null || rtpRemotePort == null || offeredPayloads.isEmpty()) {
+            Rlog.w(
+                TAG,
+                "Rejecting UPDATE with incomplete media address/payloads: " +
+                    "callId=$requestCallId cseq=$requestCseq c=$sdpConnectionData m=$sdpMedia",
+            )
+            return null
+        }
+
+        SipAudioCodecSdpLogger.logRemoteAudioCodecCandidates(
+            tag = TAG,
+            context = "remote SDP ${request.method} callId=${request.callIdOrEmpty()}",
+            sdp = sdp,
+        )
+
+        return UpdateSdpOffer(
+            rtpRemoteAddr = rtpRemoteAddr,
+            rtpRemotePort = rtpRemotePort,
+            offeredPayloads = offeredPayloads,
+            attributes = sdp.filter { it.startsWith("a=") }.map { it.substring(2) },
+        )
+    }
+
     fun handleUpdate(request: SipRequest): Int {
         val requestCallId = request.callIdOrEmpty()
         val requestCseq = request.headers["cseq"]?.getOrNull(0).orEmpty()
@@ -2155,46 +2216,15 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             return 0
         }
 
-        val sdp = request.body
-            .toString(Charsets.UTF_8)
-            .split("[\\r\\n]+".toRegex())
-            .filter { it.isNotBlank() }
-
-        Rlog.d(TAG, "Handling UPDATE SDP offer: callId=$requestCallId cseq=$requestCseq sdp=$sdp")
-
-        fun sdpElement(command: String): String? {
-            val v = sdp.firstOrNull { it.startsWith("$command=") } ?: return null
-            return v.substring(2)
-        }
-
-        val sdpConnectionData = sdpElement("c")
-        val sdpMedia = sdpElement("m")
-        if (sdpConnectionData == null || sdpMedia == null) {
-            Rlog.w(TAG, "Rejecting UPDATE without usable c=/m= SDP: callId=$requestCallId cseq=$requestCseq")
-            return 488
-        }
-
-        val rtpRemote = sdpConnectionData.split(" ").getOrNull(2)
-        val rtpRemoteAddr = rtpRemote?.let { InetAddress.getByName(it) }
-        val mediaParts = sdpMedia.trim().split("\\s+".toRegex())
-        val rtpRemotePort = mediaParts.getOrNull(1)?.toIntOrNull()
-        val offeredPayloads = mediaParts.drop(3).mapNotNull { it.toIntOrNull() }.toSet()
-
-        if (rtpRemoteAddr == null || rtpRemotePort == null || offeredPayloads.isEmpty()) {
-            Rlog.w(
-                TAG,
-                "Rejecting UPDATE with incomplete media address/payloads: " +
-                    "callId=$requestCallId cseq=$requestCseq c=$sdpConnectionData m=$sdpMedia",
-            )
-            return 488
-        }
-
-        val attributes = sdp.filter { it.startsWith("a=") }.map { it.substring(2) }
-        SipAudioCodecSdpLogger.logRemoteAudioCodecCandidates(
-            tag = TAG,
-            context = "remote SDP ${request.method} callId=${request.callIdOrEmpty()}",
-            sdp = sdp,
-        )
+        val updateSdpOffer = parseUpdateSdpOffer(
+            request = request,
+            requestCallId = requestCallId,
+            requestCseq = requestCseq,
+        ) ?: return 488
+        val rtpRemoteAddr = updateSdpOffer.rtpRemoteAddr
+        val rtpRemotePort = updateSdpOffer.rtpRemotePort
+        val offeredPayloads = updateSdpOffer.offeredPayloads
+        val attributes = updateSdpOffer.attributes
 
         fun trackRequirements(track: Int): String? {
             return attributes.firstOrNull { it.startsWith("fmtp:$track") }
