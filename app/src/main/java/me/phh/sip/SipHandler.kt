@@ -1678,6 +1678,54 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         }
     }
 
+
+    private fun createImsNetworkCallback(): ConnectivityManager.NetworkCallback {
+        return object : ConnectivityManager.NetworkCallback() {
+            override fun onUnavailable() {
+                Rlog.d(TAG, "IMS network unavailable ${imsDualSimDebugContext()}")
+            }
+
+            override fun onLost(lostNetwork: Network) {
+                handleImsNetworkLost(
+                    callback = this,
+                    lostNetwork = lostNetwork,
+                )
+            }
+
+            override fun onBlockedStatusChanged(network: Network, blocked: Boolean) {
+                Rlog.d(TAG, "IMS network blocked status changed ${imsDualSimDebugContext("blocked=$blocked")}")
+            }
+
+            override fun onCapabilitiesChanged(
+                network: Network,
+                networkCapabilities: NetworkCapabilities,
+            ) {
+                handleImsNetworkCapabilitiesChanged(
+                    changedNetwork = network,
+                    networkCapabilities = networkCapabilities,
+                )
+            }
+
+            override fun onLosing(network: Network, maxMsToLive: Int) {
+                Rlog.d(TAG, "IMS network losing")
+            }
+
+            override fun onLinkPropertiesChanged(
+                _network: Network,
+                linkProperties: LinkProperties,
+            ) {
+                handleImsNetworkLinkPropertiesChanged(
+                    changedNetwork = _network,
+                    linkProperties = linkProperties,
+                )
+            }
+
+            override fun onAvailable(_network: Network) {
+                handleImsNetworkAvailable(_network)
+            }
+        }
+    }
+
     fun getVolteNetwork() {
         // TODO add something similar for VoWifi ipsec tunnel?
         Rlog.d(TAG, "Requesting IMS network ${imsDualSimDebugContext()}")
@@ -1692,49 +1740,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
         unregisterImsNetworkCallback("new IMS network request")
 
-        val callback = object : ConnectivityManager.NetworkCallback() {
-                override fun onUnavailable() {
-                    Rlog.d(TAG, "IMS network unavailable ${imsDualSimDebugContext()}")
-                }
-
-                override fun onLost(lostNetwork: Network) {
-                    handleImsNetworkLost(
-                        callback = this,
-                        lostNetwork = lostNetwork,
-                    )
-                }
-
-                override fun onBlockedStatusChanged(network: Network, blocked: Boolean) {
-                    Rlog.d(TAG, "IMS network blocked status changed ${imsDualSimDebugContext("blocked=$blocked")}")
-                }
-                override fun onCapabilitiesChanged(
-                    network: Network,
-                    networkCapabilities: NetworkCapabilities,
-                ) {
-                    handleImsNetworkCapabilitiesChanged(
-                        changedNetwork = network,
-                        networkCapabilities = networkCapabilities,
-                    )
-                }
-
-                override fun onLosing(network: Network, maxMsToLive: Int) {
-                    Rlog.d(TAG, "IMS network losing")
-                }
-
-                override fun onLinkPropertiesChanged(
-                    _network: Network,
-                    linkProperties: LinkProperties,
-                ) {
-                    handleImsNetworkLinkPropertiesChanged(
-                        changedNetwork = _network,
-                        linkProperties = linkProperties,
-                    )
-                }
-
-                override fun onAvailable(_network: Network) {
-                    handleImsNetworkAvailable(_network)
-                }
-            }
+        val callback = createImsNetworkCallback()
 
         imsNetworkCallback = callback
         connectivityManager.requestNetwork(imsNetworkRequest, callback)
