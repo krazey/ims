@@ -2319,6 +2319,34 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         )
     }
 
+
+    private fun updateCurrentCallFromUpdateSdp(
+        call: Call,
+        request: SipRequest,
+        answerSdp: ByteArray,
+        amrTrack: Int,
+        amrTrackDesc: String,
+        dtmfTrack: Int,
+        dtmfTrackDesc: String,
+        rtpRemoteAddr: InetAddress,
+        rtpRemotePort: Int,
+    ): Call {
+        val updatedCall = call.copy(
+            amrTrack = amrTrack,
+            amrTrackDesc = amrTrackDesc,
+            dtmfTrack = dtmfTrack,
+            dtmfTrackDesc = dtmfTrackDesc,
+            rtpRemoteAddr = rtpRemoteAddr,
+            rtpRemotePort = rtpRemotePort,
+            sdp = answerSdp,
+            remoteContact = request.headers["contact"]?.getOrNull(0)
+                ?.let { extractDestinationFromContact(it) }
+                ?: call.remoteContact,
+        )
+        currentCall = updatedCall
+        return updatedCall
+    }
+
     fun handleUpdate(request: SipRequest): Int {
         val requestCallId = request.callIdOrEmpty()
         val requestCseq = request.headers["cseq"]?.getOrNull(0).orEmpty()
@@ -2403,22 +2431,21 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             dtmfTrackDesc = dtmfTrackDesc,
         )
 
-        currentCall = call.copy(
+        val updatedCall = updateCurrentCallFromUpdateSdp(
+            call = call,
+            request = request,
+            answerSdp = answerSdp,
             amrTrack = amrTrack,
             amrTrackDesc = amrTrackDesc,
             dtmfTrack = dtmfTrack,
             dtmfTrackDesc = dtmfTrackDesc,
             rtpRemoteAddr = rtpRemoteAddr,
             rtpRemotePort = rtpRemotePort,
-            sdp = answerSdp,
-            remoteContact = request.headers["contact"]?.getOrNull(0)
-                ?.let { extractDestinationFromContact(it) }
-                ?: call.remoteContact,
         )
 
         val reply = okUpdateWithSdpResponse(
             request = request,
-            callId = currentCall!!.callIdOrEmpty(),
+            callId = updatedCall.callIdOrEmpty(),
             answerSdp = answerSdp,
         )
         writeUpdateReply(updateResponseWriter, reply)
