@@ -2249,6 +2249,55 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         }
     }
 
+
+    private fun buildUpdateAnswerSdp(
+        request: SipRequest,
+        call: Call,
+        attributes: List<String>,
+        amrTrack: Int,
+        amrTrackDesc: String,
+        amrFmtpAnswer: String,
+        dtmfTrack: Int,
+        dtmfTrackDesc: String,
+    ): ByteArray {
+        val selectedAudioCodec = call.audioCodec
+        val allTracks = listOf(amrTrack, dtmfTrack)
+        val ipType = if (socket.gLocalAddr() is Inet6Address) "IP6" else "IP4"
+        val owner = request.destination.substringAfter("sip:").substringBefore("@").ifBlank { "-" }
+        val sdpVersion = call.localSdpVersion.incrementAndGet()
+        val remoteMaxptime = attributes.firstOrNull { it.startsWith("maxptime:") } ?: "maxptime:240"
+        val sdpBandwidthAs = SipAudioCodecNegotiator.sdpBandwidthAsKbps(selectedAudioCodec)
+
+        val answerSdpLines = listOf(
+            "v=0",
+            "o=$owner 1 $sdpVersion IN $ipType ${socket.gLocalAddr().hostAddress}",
+            "s=phh voice call",
+            "c=IN $ipType ${socket.gLocalAddr().hostAddress}",
+            "b=AS:$sdpBandwidthAs",
+            "b=RS:0",
+            "b=RR:0",
+            "t=0 0",
+            "m=audio ${call.rtpSocket.localPort} RTP/AVP ${allTracks.joinToString(" ")}",
+            "b=AS:$sdpBandwidthAs",
+            "b=RS:0",
+            "b=RR:0",
+            "a=$amrTrackDesc",
+            "a=ptime:20",
+            "a=$remoteMaxptime",
+            "a=$dtmfTrackDesc",
+            "a=$amrFmtpAnswer",
+            "a=fmtp:$dtmfTrack 0-15",
+            "a=curr:qos local sendrecv",
+            "a=curr:qos remote sendrecv",
+            "a=des:qos mandatory local sendrecv",
+            "a=des:qos mandatory remote sendrecv",
+            "a=conf:qos remote sendrecv",
+            "a=sendrecv",
+        )
+
+        return answerSdpLines.joinToString("\r\n").toByteArray(Charsets.US_ASCII)
+    }
+
     fun handleUpdate(request: SipRequest): Int {
         val requestCallId = request.callIdOrEmpty()
         val requestCseq = request.headers["cseq"]?.getOrNull(0).orEmpty()
@@ -2322,40 +2371,16 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             requestCallId = requestCallId,
         )
 
-        val allTracks = listOf(amrTrack, dtmfTrack)
-        val ipType = if (socket.gLocalAddr() is Inet6Address) "IP6" else "IP4"
-        val owner = request.destination.substringAfter("sip:").substringBefore("@").ifBlank { "-" }
-        val sdpVersion = call.localSdpVersion.incrementAndGet()
-        val remoteMaxptime = attributes.firstOrNull { it.startsWith("maxptime:") } ?: "maxptime:240"
-        val sdpBandwidthAs = SipAudioCodecNegotiator.sdpBandwidthAsKbps(selectedAudioCodec)
-
-        val answerSdpLines = listOf(
-            "v=0",
-            "o=$owner 1 $sdpVersion IN $ipType ${socket.gLocalAddr().hostAddress}",
-            "s=phh voice call",
-            "c=IN $ipType ${socket.gLocalAddr().hostAddress}",
-            "b=AS:$sdpBandwidthAs",
-            "b=RS:0",
-            "b=RR:0",
-            "t=0 0",
-            "m=audio ${call.rtpSocket.localPort} RTP/AVP ${allTracks.joinToString(" ")}",
-            "b=AS:$sdpBandwidthAs",
-            "b=RS:0",
-            "b=RR:0",
-            "a=$amrTrackDesc",
-            "a=ptime:20",
-            "a=$remoteMaxptime",
-            "a=$dtmfTrackDesc",
-            "a=$amrFmtpAnswer",
-            "a=fmtp:$dtmfTrack 0-15",
-            "a=curr:qos local sendrecv",
-            "a=curr:qos remote sendrecv",
-            "a=des:qos mandatory local sendrecv",
-            "a=des:qos mandatory remote sendrecv",
-            "a=conf:qos remote sendrecv",
-            "a=sendrecv",
+        val answerSdp = buildUpdateAnswerSdp(
+            request = request,
+            call = call,
+            attributes = attributes,
+            amrTrack = amrTrack,
+            amrTrackDesc = amrTrackDesc,
+            amrFmtpAnswer = amrFmtpAnswer,
+            dtmfTrack = dtmfTrack,
+            dtmfTrackDesc = dtmfTrackDesc,
         )
-        val answerSdp = answerSdpLines.joinToString("\r\n").toByteArray(Charsets.US_ASCII)
 
         currentCall = call.copy(
             amrTrack = amrTrack,
