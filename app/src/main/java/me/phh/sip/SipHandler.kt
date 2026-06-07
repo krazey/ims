@@ -2347,6 +2347,27 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         return updatedCall
     }
 
+
+    private fun sendIncomingUpdateRingingIfNeeded(
+        call: Call,
+        updateResponseWriter: java.io.OutputStream,
+    ) {
+        if (call.outgoing) {
+            return
+        }
+
+        val myHeaders2 = call.callHeaders - "rseq" - "content-type" - "require"
+        val msg2 = SipResponse(
+            statusCode = 180,
+            statusString = "Ringing",
+            headersParam = myHeaders2,
+        )
+        Rlog.d(TAG, "Sending $msg2")
+        synchronized(updateResponseWriter) {
+            updateResponseWriter.write(msg2.toByteArray())
+        }
+    }
+
     fun handleUpdate(request: SipRequest): Int {
         val requestCallId = request.callIdOrEmpty()
         val requestCseq = request.headers["cseq"]?.getOrNull(0).orEmpty()
@@ -2450,18 +2471,10 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         )
         writeUpdateReply(updateResponseWriter, reply)
 
-        if (!call.outgoing) {
-            val myHeaders2 = call.callHeaders - "rseq" - "content-type" - "require"
-            val msg2 = SipResponse(
-                statusCode = 180,
-                statusString = "Ringing",
-                headersParam = myHeaders2,
-            )
-            Rlog.d(TAG, "Sending $msg2")
-            synchronized(updateResponseWriter) {
-                updateResponseWriter.write(msg2.toByteArray())
-            }
-        }
+        sendIncomingUpdateRingingIfNeeded(
+            call = call,
+            updateResponseWriter = updateResponseWriter,
+        )
 
         return 0
     }
