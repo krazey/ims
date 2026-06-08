@@ -323,6 +323,26 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         return keepCallback
     }
 
+    fun isReadyForOutgoingCall(): Boolean {
+        val ready =
+            imsReady &&
+                !reconnectController.isReconnecting() &&
+                this::network.isInitialized &&
+                this::socket.isInitialized
+
+        if (!ready) {
+            Rlog.w(
+                TAG,
+                "Rejecting outgoing call while IMS is not stable: " +
+                    "imsReady=$imsReady reconnecting=${reconnectController.isReconnecting()} " +
+                    "networkInitialized=${this::network.isInitialized} " +
+                    "socketInitialized=${this::socket.isInitialized}",
+            )
+        }
+
+        return ready
+    }
+
     fun getRegistrationTech(): Int = imsRegistrationTech
 
     fun handlesSubscription(candidateSubId: Int): Boolean = subId == candidateSubId
