@@ -2048,7 +2048,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         }
     }
 
-    fun prack(resp: SipResponse) {
+    fun prack(resp: SipResponse, cseq: Int) {
         val who = extractDestinationFromContact(resp.headers["contact"]!![0])
         val callId = resp.headers["call-id"]!![0]
         val rseq = resp.headers["rseq"]!![0]
@@ -2064,6 +2064,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
                 who,
                 headersParam = headers + """
                     RAck: $whatToPrack
+                    CSeq: $cseq PRACK
                     Require: sec-agree
                     To: ${resp.headers["to"]!![0]}
                     From: ${resp.headers["from"]!![0]}
@@ -2400,6 +2401,11 @@ a=sendrecv
                     sdp
                 )
             val outgoingInviteCallId = msg.headers["call-id"]!![0]
+            val outgoingInviteCseq = msg.headers["cseq"]?.getOrNull(0)
+                ?.substringBefore(" ")
+                ?.toIntOrNull()
+                ?: 1
+            val outgoingDialogNextCseq = AtomicInteger(outgoingInviteCseq + 1)
             pendingOutgoingInvite = PendingOutgoingInvite(
                 callId = outgoingInviteCallId,
                 destination = to,
@@ -2431,6 +2437,10 @@ a=sendrecv
                     }
                     if (resp.statusCode >= 300) {
                         Rlog.w(TAG, "PRACK failed for pending provisional response: status=${resp.statusCode} ${resp.statusString} cseq=$cseq")
+                        val failedReliableKey = "${savedProvisional.headers["rseq"]?.getOrNull(0).orEmpty()} ${savedProvisional.headers["cseq"]?.getOrNull(0).orEmpty()}"
+                        if (prackedReliableProvisionals.remove(failedReliableKey)) {
+                            Rlog.w(TAG, "Removing failed PRACK key so retransmitted reliable provisional can be retried: $failedReliableKey")
+                        }
                         respInFlight = null
                         return@setResponseCallback false
                     }
@@ -2488,9 +2498,9 @@ a=sendrecv
                         if (rrFrom200Ok != null) {
                             confirmedHeaders = confirmedHeaders + ("record-route" to rrFrom200Ok) + ("route" to rrFrom200Ok)
                         }
-                        // INVITE uses its original CSeq for ACK. If we sent PRACK, the next local
-                        // in-dialog request must be INVITE CSeq + 2, otherwise INVITE CSeq + 1.
-                        val nextDialogCseq = cseq + if (rseqHandled) 2 else 1
+                        // INVITE uses its original CSeq for ACK. Keep later in-dialog requests
+                        // past any PRACK/UPDATE/BYE CSeq already allocated while the call was pending.
+                        val nextDialogCseq = maxOf(cseq + 1, outgoingDialogNextCseq.get())
                         val keptCseq = maxOf(confirmedCall.localCseq.get(), nextDialogCseq)
                         confirmedCall.copy(
                             callHeaders = confirmedHeaders,
@@ -2569,7 +2579,31 @@ a=sendrecv
                         Rlog.w(TAG, "Ignoring duplicate reliable provisional response already PRACKed: $reliableKey")
                         return@setResponseCallback false
                     }
-                    prack(resp)
+                    val currentCallNextCseq = currentCall?.localCseq?.get() ?: 0
+                    val allocatorNextCseq = outgoingDialogNextCseq.get()
+                    if (currentCallNextCseq > allocatorNextCseq) {
+                        Rlog.d(
+                            TAG,
+                            "Syncing outgoing PRACK CSeq allocator from current call: " +
+                                "allocator=$allocatorNextCseq currentCallNext=$currentCallNextCseq key=$reliableKey",
+                        )
+                        outgoingDialogNextCseq.set(currentCallNextCseq)
+                    }
+                    val prackCseq = outgoingDialogNextCseq.getAndIncrement()
+                    currentCall?.localCseq?.let { callCseq ->
+                        while (true) {
+                            val old = callCseq.get()
+                            val desired = prackCseq + 1
+                            if (old >= desired || callCseq.compareAndSet(old, desired)) break
+                        }
+                    }
+                    prack(resp, prackCseq)
+                    Rlog.d(
+                        TAG,
+                        "Outgoing PRACK consumed local CSeq=$prackCseq " +
+                            "nextAllocatorCseq=${outgoingDialogNextCseq.get()} " +
+                            "currentCallNextCseq=${currentCall?.localCseq?.get()} key=$reliableKey",
+                    )
                     respInFlight = resp
                     return@setResponseCallback false
                 }
@@ -2597,7 +2631,11 @@ a=sendrecv
                     Rlog.w(TAG, "Failed to connect outgoing RTP socket to ${rtpRemoteAddr}:${rtpRemotePortInt}", e)
                 }
                 val inviteCseqForDialog = resp.headers["cseq"]!![0].substringBefore(" ").toIntOrNull() ?: 1
-                val nextLocalCseqForDialog = inviteCseqForDialog + if (rseqHandled) 2 else 1
+                val nextLocalCseqForDialog = maxOf(
+                    inviteCseqForDialog + 1,
+                    outgoingDialogNextCseq.get(),
+                    currentCall?.localCseq?.get() ?: 0,
+                )
                 currentCall = Call(
                     outgoing = true,
                     amrTrack = amrTrack,
