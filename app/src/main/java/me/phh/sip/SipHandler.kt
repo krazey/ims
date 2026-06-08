@@ -168,6 +168,7 @@ class SipHandler(
     var imsRegisteringCallback: ((Int) -> Unit)? = null
     private var imsRegistrationTech = REGISTRATION_TECH_LTE
     private var pendingCellularReconnectAfterWfcDisable = false
+    private var pendingImsReconnectAfterActiveCallReason: String? = null
     
     private var imsNetworkCallback: ConnectivityManager.NetworkCallback? = null
 private val smsHandler = SipSmsHandler(
@@ -217,11 +218,32 @@ private val smsHandler = SipSmsHandler(
         }
     }
 
-private fun stopCallRuntime(reason: String) {
+    private fun runDeferredImsReconnectAfterCallTerminalState(reason: String) {
+        if (reason == "IMS reconnect") {
+            return
+        }
+
+        val deferredReconnectReason = pendingImsReconnectAfterActiveCallReason ?: return
+        pendingImsReconnectAfterActiveCallReason = null
+
+        Rlog.w(
+            TAG,
+            "Scheduling deferred IMS reconnect after call terminal state: " +
+                "$deferredReconnectReason terminalReason=$reason",
+        )
+        scheduleReconnectRetry(
+            "deferred until call terminal state: $deferredReconnectReason",
+            1000L,
+        )
+    }
+
+    private fun stopCallRuntime(reason: String) {
         Rlog.d(TAG, "Stopping call runtime state: $reason")
         callStopped.set(true)
         callStarted.set(false)
         threadsStarted.set(false)
+
+        runDeferredImsReconnectAfterCallTerminalState(reason)
     }
 
     private fun writeSipBytes(writer: OutputStream, bytes: ByteArray, label: String): Boolean {
@@ -390,6 +412,7 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
             }
 
             reconnectController.invalidatePendingReconnects("SipHandler shutdown: $reason")
+            pendingImsReconnectAfterActiveCallReason = null
             imsNetworkRequestRestarter.invalidate("SipHandler shutdown: $reason")
             dropImsConnection("SipHandler shutdown: $reason")
             unregisterImsNetworkCallback("SipHandler shutdown: $reason")
@@ -456,6 +479,16 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
             )
             return false
         }
+        if (hasActiveOrPendingCallForImsReconnectDeferral()) {
+            pendingImsReconnectAfterActiveCallReason = reason
+            Rlog.w(
+                TAG,
+                "Deferring IMS reconnect for $reason while SIP call is active or pending: " +
+                    activeOrPendingCallSummaryForReconnectDeferral(),
+            )
+            return false
+        }
+
         if (reconnectController.isReconnecting()) {
             Rlog.w(TAG, "Suppressing IMS reconnect for $reason because a controlled IMS reconnect is already running")
             return false
@@ -500,8 +533,12 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
     private fun hasActiveOrPendingCallForImsReconnectDeferral(): Boolean {
         val hasDialogState = currentCall != null || pendingOutgoingInvite != null
-        val hasMediaRuntime = callStarted.get() || threadsStarted.get()
-        return hasDialogState || hasMediaRuntime
+        if (hasDialogState) {
+            return true
+        }
+
+        val hasMediaRuntime = !callStopped.get() && (callStarted.get() || threadsStarted.get())
+        return hasMediaRuntime
     }
 
     private fun activeOrPendingCallSummaryForReconnectDeferral(): String {
