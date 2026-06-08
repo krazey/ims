@@ -390,6 +390,7 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
             }
 
             reconnectController.invalidatePendingReconnects("SipHandler shutdown: $reason")
+            imsNetworkRequestRestarter.invalidate("SipHandler shutdown: $reason")
             dropImsConnection("SipHandler shutdown: $reason")
             unregisterImsNetworkCallback("SipHandler shutdown: $reason")
             wfcSubscriptionSettingMonitor.stop()
