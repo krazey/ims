@@ -28,7 +28,7 @@ object SipContactHeaders {
         transport: String,
         sipInstance: String,
     ): String =
-        """<sip:$userPart@$localEndpoint;transport=$transport>;expires=600000;+sip.instance="$sipInstance";$MMTEL_CONTACT_FEATURES"""
+        """<sip:$userPart@$localEndpoint;transport=$transport>;expires=7200;+sip.instance="$sipInstance";$MMTEL_CONTACT_FEATURES"""
 
     fun viaHeaders(socket: SipConnection, localEndpoint: String): SipHeadersMap {
         val transport = if (socket is SipConnectionTcp) "TCP" else "UDP"

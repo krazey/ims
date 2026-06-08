@@ -25,7 +25,7 @@ object SipRegEventSubscribeBuilder {
                 Contact: $contactTel
                 P-Preferred-Identity: <$mySip>
                 Event: reg
-                Expires: 600000
+                Expires: 7200
                 Supported: sec-agree
                 Require: sec-agree
                 Proxy-Require: sec-agree

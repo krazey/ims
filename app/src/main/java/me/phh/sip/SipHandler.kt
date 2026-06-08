@@ -2732,14 +2732,14 @@ a=sendrecv
                     "${socket.gLocalAddr().hostAddress}:${serverSocket.localPort}"
             val transport = if (socket is SipConnectionTcp) "tcp" else "udp"
             val contactTel =
-                """<sip:$myTel@$local;transport=$transport>;expires=600000;+sip.instance="$sipInstance";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.smsip;audio"""
+                """<sip:$myTel@$local;transport=$transport>;expires=7200;+sip.instance="$sipInstance";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.smsip;audio"""
             val myHeaders = commonHeaders +
                 """
                     From: <$mySip>
                     To: <$to>
                     P-Preferred-Identity: <$mySip>
                     P-Asserted-Identity: <$mySip>
-                    Expires: 600000
+                    Expires: 7200
                     Require: sec-agree
                     Proxy-Require: sec-agree
                     Allow: INVITE, ACK, CANCEL, BYE, UPDATE, REFER, NOTIFY, MESSAGE, PRACK, OPTIONS

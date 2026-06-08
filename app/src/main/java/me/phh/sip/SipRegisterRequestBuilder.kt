@@ -25,7 +25,7 @@ object SipRegisterRequestBuilder {
             // "sip:lte-lguplus.co.kr",
             registerHeaders +
                 """
-                Expires: 600000
+                Expires: 7200
                 Cseq: $registerCounter REGISTER
                 Contact: $contact
                 Supported: path, gruu, sec-agree

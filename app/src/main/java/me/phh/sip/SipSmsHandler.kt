@@ -260,7 +260,7 @@ internal class SipSmsHandler(
                 To: <$dest>
                 P-Preferred-Identity: <$mySip>
                 P-Asserted-Identity: <$mySip>
-                Expires: 600000
+                Expires: 7200
                 Content-Type: application/vnd.3gpp.sms
                 Supported: sec-agree, path
                 Require: sec-agree
