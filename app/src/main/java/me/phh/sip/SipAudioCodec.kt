@@ -5,6 +5,7 @@ import android.telephony.Rlog
 
 internal data class NegotiatedAudioCodec(
     val name: String,
+    val sdpCodecName: String,
     val mimeType: String,
     val rtpClockRate: Int,
     val sampleRate: Int,
@@ -13,6 +14,7 @@ internal data class NegotiatedAudioCodec(
     val frameDurationMs: Int,
     val rtpTimestampStep: Int,
     val storageFrameSizeBytes: Int,
+    val prefersOctetAlignedRtp: Boolean,
 )
 
 internal object SipAudioCodecs {
@@ -21,6 +23,7 @@ internal object SipAudioCodecs {
     // this fallback profile's behavior.
     val AMR_NB = NegotiatedAudioCodec(
         name = "AMR-NB",
+        sdpCodecName = "AMR",
         mimeType = "audio/3gpp",
         rtpClockRate = 8000,
         sampleRate = 8000,
@@ -29,6 +32,26 @@ internal object SipAudioCodecs {
         frameDurationMs = 20,
         rtpTimestampStep = 160,
         storageFrameSizeBytes = 32,
+        prefersOctetAlignedRtp = false,
+    )
+
+    // Future HD Voice target. This profile is intentionally not selected yet;
+    // the current media path still uses AMR_NB until AMR-WB RTP payload
+    // parsing/packetization is implemented and validated.
+    val AMR_WB = NegotiatedAudioCodec(
+        name = "AMR-WB",
+        sdpCodecName = "AMR-WB",
+        mimeType = "audio/amr-wb",
+        rtpClockRate = 16000,
+        sampleRate = 16000,
+        channelCount = 1,
+        bitRate = 12650,
+        frameDurationMs = 20,
+        rtpTimestampStep = 320,
+        // Enough for one AMR-WB storage-format frame at the highest mode:
+        // one frame header plus octet-padded speech bits.
+        storageFrameSizeBytes = 61,
+        prefersOctetAlignedRtp = false,
     )
 }
 
@@ -42,7 +65,7 @@ internal data class RemoteAudioCodecCandidate(
 )
 
 internal object SipAudioCodecSdpLogger {
-    private fun parseRemoteAudioCodecCandidates(sdp: List<String>): List<RemoteAudioCodecCandidate> {
+    fun parseRemoteAudioCodecCandidates(sdp: List<String>): List<RemoteAudioCodecCandidate> {
         val mediaPayloads = sdp.firstOrNull { it.startsWith("m=audio ") }
             ?.split("\\s+".toRegex())
             ?.drop(3)
@@ -94,7 +117,7 @@ internal object SipAudioCodecSdpLogger {
             .sortedBy { it.offeredOrder }
     }
 
-    private fun remoteAudioCodecCandidateRank(candidate: RemoteAudioCodecCandidate): Int {
+    fun remoteAudioCodecCandidateRank(candidate: RemoteAudioCodecCandidate): Int {
         val fmtp = candidate.fmtp
         val octetAligned = fmtp.contains("octet-align=1", ignoreCase = true)
         return when {
@@ -110,7 +133,7 @@ internal object SipAudioCodecSdpLogger {
         }
     }
 
-    private fun describeRemoteAudioCodecCandidate(candidate: RemoteAudioCodecCandidate): String {
+    fun describeRemoteAudioCodecCandidate(candidate: RemoteAudioCodecCandidate): String {
         val flags = mutableListOf<String>()
         if (candidate.fmtp.contains("octet-align=1", ignoreCase = true)) {
             flags += "octet-align"
@@ -146,6 +169,23 @@ internal object SipAudioCodecSdpLogger {
         }
     }
 
+    fun bestKnownWidebandCandidate(sdp: List<String>): RemoteAudioCodecCandidate? =
+        parseRemoteAudioCodecCandidates(sdp)
+            .filter {
+                it.codec == SipAudioCodecs.AMR_WB.sdpCodecName &&
+                    it.rate == SipAudioCodecs.AMR_WB.rtpClockRate
+            }
+            .minByOrNull { it.offeredOrder }
+
+    fun bestCurrentlyImplementedCandidate(sdp: List<String>): RemoteAudioCodecCandidate? =
+        parseRemoteAudioCodecCandidates(sdp)
+            .filter {
+                it.codec == SipAudioCodecs.AMR_NB.sdpCodecName &&
+                    it.rate == SipAudioCodecs.AMR_NB.rtpClockRate &&
+                    !it.fmtp.contains("octet-align=1", ignoreCase = true)
+            }
+            .minByOrNull { it.offeredOrder }
+
     fun logRemoteAudioCodecCandidates(tag: String, context: String, sdp: List<String>) {
         val candidates = parseRemoteAudioCodecCandidates(sdp)
         if (candidates.isEmpty()) {
@@ -169,10 +209,15 @@ internal object SipAudioCodecSdpLogger {
             )
             .joinToString(" | ") { describeRemoteAudioCodecCandidate(it) }
 
+        val bestWideband = bestKnownWidebandCandidate(sdp)
+        val bestImplemented = bestCurrentlyImplementedCandidate(sdp)
+
         Rlog.d(
             tag,
             "$context remote audio codec candidates futureRanked=$futureRanked " +
-                "implementedNowPayloads=$implementedNowPayloads",
+                "implementedNowPayloads=$implementedNowPayloads " +
+                "bestWideband=${bestWideband?.let { describeRemoteAudioCodecCandidate(it) }} " +
+                "bestImplemented=${bestImplemented?.let { describeRemoteAudioCodecCandidate(it) }}",
         )
     }
 }
