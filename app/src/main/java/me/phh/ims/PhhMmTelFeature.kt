@@ -83,7 +83,11 @@ class PhhMmTelFeature(
                 .firstOrNull { it.subscriptionId == frameworkSubId }
                 ?.simSlotIndex
 
-            if (frameworkSlot == null || frameworkSlot == slotId) {
+            if (frameworkSlot == slotId) {
+                return frameworkSubId
+            }
+
+            if (frameworkSlot == null && activeSubscriptions.isEmpty()) {
                 return frameworkSubId
             }
 

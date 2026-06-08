@@ -59,6 +59,21 @@ class PhhImsService : ImsService() {
         Rlog.d(TAG, "Alarm set")
     }
 
+    private fun notifyFeatureSubscriptionChanged(
+        slotId: Int,
+        subscriptionId: Int,
+        reason: String,
+    ) {
+        val feature = mmTelFeaturesBySlot[slotId] ?: return
+
+        Rlog.d(
+            TAG,
+            "notifyFeatureSubscriptionChanged slotId=$slotId " +
+                "subscriptionId=$subscriptionId reason=$reason",
+        )
+        feature.onSubscriptionChangedFromService(subscriptionId)
+    }
+
     override fun createMmTelFeatureForSubscription(
         slotId: Int,
         subscriptionId: Int,
@@ -70,7 +85,11 @@ class PhhImsService : ImsService() {
 
         val existingFeature = mmTelFeaturesBySlot[slotId]
         if (existingFeature != null) {
-            existingFeature.onSubscriptionChangedFromService(subscriptionId)
+            notifyFeatureSubscriptionChanged(
+                slotId,
+                subscriptionId,
+                "createMmTelFeatureForSubscription existing feature",
+            )
             return existingFeature
         }
 
@@ -93,6 +112,8 @@ class PhhImsService : ImsService() {
     ): ImsConfigImplBase {
         Rlog.d(TAG, "getConfigForSubscription slotId=$slotId subscriptionId=$subscriptionId")
 
+        notifyFeatureSubscriptionChanged(slotId, subscriptionId, "getConfigForSubscription")
+
         return configsBySlot.getOrPut(slotId) {
             PhhImsConfig()
         }
@@ -103,6 +124,8 @@ class PhhImsService : ImsService() {
         subscriptionId: Int,
     ): ImsRegistrationImplBase {
         Rlog.d(TAG, "getRegistrationForSubscription slotId=$slotId subscriptionId=$subscriptionId")
+
+        notifyFeatureSubscriptionChanged(slotId, subscriptionId, "getRegistrationForSubscription")
 
         return imsRegistrationsBySlot.getOrPut(slotId) {
             ImsRegistrationImplBase()
