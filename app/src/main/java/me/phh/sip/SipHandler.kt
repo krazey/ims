@@ -274,8 +274,53 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         return dispatcher.parseMessage(reader, writer)
     }
 
+    private fun sipHeaderValues(response: SipResponse, name: String): List<String> {
+        val lowerName = name.lowercase()
+        return if (lowerName == name) {
+            response.headers[name].orEmpty()
+        } else {
+            response.headers[lowerName].orEmpty() + response.headers[name].orEmpty()
+        }
+    }
+
+    private fun isOutgoingInviteAuthFailure(response: SipResponse): Boolean {
+        if (response.statusCode != 500) {
+            return false
+        }
+
+        val cseq = sipHeaderValues(response, "cseq").joinToString(" ")
+        val responseText = response.toString()
+        val isInviteResponse =
+            cseq.contains("INVITE", ignoreCase = true) ||
+                responseText.contains("CSeq:", ignoreCase = true) &&
+                responseText.contains("INVITE", ignoreCase = true)
+
+        if (!isInviteResponse) {
+            return false
+        }
+
+        val debugInfo = sipHeaderValues(response, "p-debug-info").joinToString(" ")
+        val warning = sipHeaderValues(response, "warning").joinToString(" ")
+        val combined = "$debugInfo $warning $responseText"
+
+        return combined.contains("AUTH failure", ignoreCase = true) ||
+            combined.contains("not authorised", ignoreCase = true) ||
+            combined.contains("not authorized", ignoreCase = true)
+    }
+
     fun handleResponse(response: SipResponse): Boolean {
-        return dispatcher.handleResponse(response)
+        val keepCallback = dispatcher.handleResponse(response)
+
+        if (isOutgoingInviteAuthFailure(response)) {
+            Rlog.w(
+                TAG,
+                "Outgoing INVITE failed with SIP auth/security context error; " +
+                    "scheduling IMS reconnect",
+            )
+            scheduleReconnectRetry("outgoing INVITE auth failure", 1000L)
+        }
+
+        return keepCallback
     }
 
     fun getRegistrationTech(): Int = imsRegistrationTech
