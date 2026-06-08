@@ -241,18 +241,113 @@ internal class SipSmsHandler(
 
         val realm = realmProvider()
         val mySip = mySipProvider()
-        val smsc = frameworkSmsc ?: identitySmsc ?: managerSmsc
+        val rawSmsc = frameworkSmsc ?: identitySmsc ?: managerSmsc
+
+        /*
+         * SingTel IMS SMS must be sent to the operator SMSC URI in the
+         * ims.singtel.com realm. Decode framework-provided PDU SMSC addresses
+         * before building both RP-DATA and the SIP MESSAGE target.
+         */
+        val isSingTelSms = realm.equals("ims.mnc001.mcc525.3gppnetwork.org", ignoreCase = true) ||
+            realm.equals("ims.singtel.com", ignoreCase = true)
+
+        fun decodeSingTelSmscPduAddress(value: String?): String? {
+            val raw = value
+                ?.trim()
+                ?.removePrefix("<")
+                ?.removeSuffix(">")
+                ?.removePrefix("sip:")
+                ?.substringBefore("@")
+                ?.substringBefore(";")
+                ?.trim()
+                ?.trimStart('+')
+                ?: return null
+
+            val hex = raw.filter { ch -> ch.isDigit() || ch.lowercaseChar() in 'a'..'f' }
+            if (hex.length < 4 || hex.length % 2 != 0) return null
+
+            val len = hex.substring(0, 2).toIntOrNull(16) ?: return null
+            if (len <= 1) return null
+
+            val bcdStart = 4
+            val bcdEnd = bcdStart + (len - 1) * 2
+            if (hex.length < bcdEnd) return null
+
+            val bcd = hex.substring(bcdStart, bcdEnd)
+            val digits = buildString {
+                var i = 0
+                while (i + 1 < bcd.length) {
+                    val lo = bcd[i]
+                    val hi = bcd[i + 1]
+                    if (hi != 'f' && hi != 'F') append(hi)
+                    if (lo != 'f' && lo != 'F') append(lo)
+                    i += 2
+                }
+            }
+
+            if (digits.isBlank()) return null
+            return when {
+                digits.startsWith("65") -> "+$digits"
+                digits.length == 8 -> "+65$digits"
+                else -> "+$digits"
+            }
+        }
+
+        fun normalizeSingTelSmscAddress(value: String?): String? {
+            decodeSingTelSmscPduAddress(value)?.let { return it }
+
+            val userPart = value
+                ?.trim()
+                ?.removePrefix("<")
+                ?.removeSuffix(">")
+                ?.removePrefix("sip:")
+                ?.substringBefore("@")
+                ?.substringBefore(";")
+                ?.trim()
+                ?: return null
+
+            if (userPart.isBlank()) return null
+            val digits = userPart.trimStart('+')
+            return when {
+                userPart.startsWith("+") -> userPart
+                digits.startsWith("65") -> "+$digits"
+                digits.length == 8 -> "+65$digits"
+                else -> "+$digits"
+            }
+        }
+
+        val smsc = if (isSingTelSms) {
+            /*
+             * Use the stock SingTel IMS SMSC. Other discovered/framework SMSC
+             * values can be accepted by SIP routing but rejected at RP level.
+             */
+            "+6596197777"
+        } else {
+            rawSmsc
+        }
 
         // RP-DATA destination address. Passing an empty string makes
         // PhoneNumberUtils.numberToCalledPartyBCD("") return null and crashes
         // SipSmsEncodeSms(), so keep it null when we genuinely do not know it.
-        val rpSmsc = smsc?.let { "+$it" }
+        val rpSmsc = smsc?.let { if (it.startsWith("+")) it else "+$it" }
         val data = SipSmsEncodeSms(ref.toByte(), rpSmsc, pdu)
-        Rlog.d(tag, "sending sms ${data.toHex()} to smsc $smsc rpSmsc=$rpSmsc")
+        Rlog.d(tag, "sending sms ${data.toHex()} to rawSmsc=$rawSmsc smsc=$smsc rpSmsc=$rpSmsc")
 
         val smscSipIdentity = smscIdentity?.toString()?.let { normalizeSipTarget(it) }
-        val requestUri = smscSipIdentity ?: "sip:$realm"
-        val dest = smscSipIdentity ?: smsc?.let { "sip:+$it@$realm" } ?: "sip:$realm"
+        val singtelSmscUri = smsc?.let { "sip:${if (it.startsWith("+")) it else "+$it"}@ims.singtel.com" }
+        val requestUri = if (isSingTelSms) {
+            singtelSmscUri ?: "sip:ims.singtel.com"
+        } else {
+            smscSipIdentity ?: "sip:$realm"
+        }
+        val dest = if (isSingTelSms) {
+            requestUri
+        } else {
+            smscSipIdentity ?: smsc?.let { "sip:+$it@$realm" } ?: "sip:$realm"
+        }
+        if (isSingTelSms) {
+            Rlog.d(tag, "Using SingTel IMS SMS target requestUri=$requestUri dest=$dest rawSmsc=$rawSmsc smsc=$smsc rpSmsc=$rpSmsc")
+        }
 
         val msg = SipRequest(
             SipMethod.MESSAGE,
