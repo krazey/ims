@@ -243,7 +243,8 @@ class PhhMmTelFeature(val slotId: Int) : PhhMmTelFeatureProtected(slotId) {
         // call onRegistering first then
         // register SIP here and call onRegistered after .. register.
         val imsService = PhhImsService.Companion.instance!!
-        sipHandler = SipHandler(imsService)
+        val subId = SubscriptionManager.getSubscriptionId(slotId)
+        sipHandler = SipHandler(imsService, slotId, subId)
 sipHandler.imsFailureCallback = {
             imsService.getRegistrationForSubscription(slotId, SubscriptionManager.getSubscriptionId(slotId)).onDeregistered(null)
         }

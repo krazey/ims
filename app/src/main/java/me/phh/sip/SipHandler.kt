@@ -16,6 +16,7 @@ import android.telephony.PhoneNumberUtils
 import android.telephony.Rlog
 import android.telephony.SmsManager
 import android.telephony.SubscriptionManager
+import android.net.TelephonyNetworkSpecifier
 import android.telephony.TelephonyManager
 import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN
 import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_LTE
@@ -31,7 +32,11 @@ import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
 import kotlin.concurrent.withLock
 
-class SipHandler(val ctxt: Context) {
+class SipHandler(
+    val ctxt: Context,
+    private val slotId: Int,
+    private val requestedSubId: Int,
+) {
     companion object {
         private const val TAG = "PHH SipHandler"
     }
@@ -50,14 +55,25 @@ class SipHandler(val ctxt: Context) {
         ipSecManager = ctxt.getSystemService(IpSecManager::class.java)
     }
 
-    private fun getFirstActiveSubscription() =
-        subscriptionManager.activeSubscriptionInfoList!![0]
+    private fun getActiveSubscriptionForSlot(): android.telephony.SubscriptionInfo {
+        val activeSubscriptions = subscriptionManager.activeSubscriptionInfoList.orEmpty()
+
+        return activeSubscriptions.firstOrNull {
+            it.simSlotIndex == slotId && it.subscriptionId == requestedSubId
+        } ?: activeSubscriptions.firstOrNull {
+            it.subscriptionId == requestedSubId
+        } ?: activeSubscriptions.firstOrNull {
+            it.simSlotIndex == slotId
+        } ?: throw IllegalStateException(
+            "No active subscription for slotId=$slotId requestedSubId=$requestedSubId"
+        )
+    }
 
     private fun getDeviceIdForSlot(slotIndex: Int) =
         telephonyManager.getImei(slotIndex)
 
     private fun getAllCellInfoForRegistrationLog() =
-        telephonyManager.getAllCellInfo()
+        subTelephonyManager.getAllCellInfo()
 
     private fun createVoiceCommunicationAudioRecord(bufferSize: Int): AudioRecord =
         AudioRecord(
@@ -68,9 +84,10 @@ class SipHandler(val ctxt: Context) {
             bufferSize,
         )
 
-    private val activeSubscription = getFirstActiveSubscription()
-    private val imei = getDeviceIdForSlot(activeSubscription.simSlotIndex)
+    private val activeSubscription = getActiveSubscriptionForSlot()
     private val subId = activeSubscription.subscriptionId
+    private val subTelephonyManager = telephonyManager.createForSubscriptionId(subId)
+    private val imei = getDeviceIdForSlot(activeSubscription.simSlotIndex)
 
     private val simInfoUri = Uri.parse("content://telephony/siminfo")
     private fun normalizeOutgoingDialTargetForTelUri(rawPhoneNumber: String): String {
@@ -105,8 +122,8 @@ class SipHandler(val ctxt: Context) {
 
         val countryIso = listOf(
             activeSubscription.countryIso,
-            telephonyManager.simCountryIso,
-            telephonyManager.networkCountryIso,
+            subTelephonyManager.simCountryIso,
+            subTelephonyManager.networkCountryIso,
         ).firstOrNull { !it.isNullOrBlank() }
 
         val e164 = countryIso?.let { iso ->
@@ -139,10 +156,10 @@ private val wfcSubscriptionObserver = object : ContentObserver(myHandler) {
     init {
         registerWfcSubscriptionObserver()
     }
-    private val mcc = telephonyManager.simOperator.substring(0 until 3)
+    private val mcc = subTelephonyManager.simOperator.substring(0 until 3)
     private var mnc =
-        telephonyManager.simOperator.substring(3).let { if (it.length == 2) "0$it" else it }
-    private val imsi = telephonyManager.subscriberId
+        subTelephonyManager.simOperator.substring(3).let { if (it.length == 2) "0$it" else it }
+    private val imsi = subTelephonyManager.subscriberId
 
     /* Carrier specific settings
      */
@@ -231,7 +248,7 @@ private val wfcSubscriptionObserver = object : ContentObserver(myHandler) {
 
     private val imsNetworkRequestRestarter = ImsNetworkRequestRestarter(
         tag = TAG,
-        telephonyManager = telephonyManager,
+        telephonyManager = subTelephonyManager,
         requestImsNetwork = { getVolteNetwork() },
     )
     private val reconnectController = ImsReconnectController(
@@ -553,7 +570,7 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         ImsNetworkState.ratName(rat)
 
     private fun isRatReadyForImsNetworkRequest(): Boolean =
-        ImsNetworkState.isRatReadyForImsNetworkRequest(TAG, telephonyManager)
+        ImsNetworkState.isRatReadyForImsNetworkRequest(TAG, subTelephonyManager)
 
     private fun scheduleImsNetworkRequestRestart(reason: String, initialDelayMs: Long = 12_000L) {
         imsNetworkRequestRestarter.schedule(reason, initialDelayMs)
@@ -749,7 +766,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         val challengeRealm = wwwAuthenticateParams["realm"] ?: realm
 
         Rlog.d(TAG, "Requesting AKA challenge")
-        val akaResult = sipAkaChallenge(telephonyManager, nonceB64)
+        val akaResult = sipAkaChallenge(subTelephonyManager, nonceB64)
         // Use non-sess digest when server doesn't offer qop (no cnonce/nc in response).
         akaDigest =
             if(requireNonsessAka || wwwAuthenticateParams["qop"] == null)
@@ -928,19 +945,26 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
     fun getVolteNetwork() {
         // TODO add something similar for VoWifi ipsec tunnel?
-        Rlog.d(TAG, "Requesting IMS network")
+        Rlog.d(TAG, "Requesting IMS network for slotId=$slotId subId=$subId")
         if (!isRatReadyForImsNetworkRequest()) {
             Rlog.w(TAG, "Deferring IMS network request until LTE/NR/IWLAN is back")
             scheduleImsNetworkRequestRestart("RAT not ready for IMS network request")
             return
         }
-        connectivityManager.requestNetwork(NetworkRequest.Builder()
-            //.addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
-            //.addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            //.setNetworkSpecifier(subId.toString())
+        val imsNetworkRequest = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_IMS)
-            //.addCapability(NetworkCapabilities.NET_CAPABILITY_MMTEL)
-            .build(),
+            .setNetworkSpecifier(
+                TelephonyNetworkSpecifier.Builder()
+                    .setSubscriptionId(subId)
+                    .build()
+            )
+            .build()
+
+        Rlog.d(TAG, "Built subscription-specific IMS network request $imsNetworkRequest")
+
+        connectivityManager.requestNetwork(
+            imsNetworkRequest,
             object : ConnectivityManager.NetworkCallback() {
                 override fun onUnavailable() {
                     Rlog.d(TAG, "IMS network unavailable")
