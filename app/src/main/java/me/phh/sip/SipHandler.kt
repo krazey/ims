@@ -959,8 +959,8 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         Rlog.d(TAG, "Src port is ${socket.gLocalPort()}, TCP server port is ${serverSocket.localPort}, UDP server port is ${serverSocketUdp.localPort}")
         updateCommonHeaders(plainSocket)
         register(plainSocket.gWriter())
-        val plainRegReply =
-            if (plainSocket is SipConnectionTcp) {
+        fun readPlainRegisterReply(): SipMessage? {
+            return if (plainSocket is SipConnectionTcp) {
                 plainSocket.gReader().parseMessage()
             } else {
                 // In some IMS servers, in UDP send mode, message might come back to plainSocket or to serverSocketUdp
@@ -968,23 +968,68 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                     serverSocketUdp.gReader().parseMessage()
                 else
                     plainSocket.gReader().parseMessage()
-
             }
+        }
+
+        var plainRegReply = readPlainRegisterReply()
         Rlog.d(TAG, "Received $plainRegReply")
-        plainSocket.close()
+
         if (plainRegReply !is SipResponse || plainRegReply.statusCode != 401) {
             Rlog.w(TAG, "Didn't get expected response from initial register, aborting")
+            plainSocket.close()
             failConnectAndRetry("Initial SIP REGISTER did not return 401")
             return
         }
 
-        val registerChallenge = SipRegisterChallengeParser.parse(
+        var registerChallenge = SipRegisterChallengeParser.parse(
             response = plainRegReply,
             fallbackRealm = realm,
         )
-
         Rlog.d(TAG, "Requesting AKA challenge")
-        val akaResult = sipAkaChallenge(subTelephonyManager, registerChallenge.nonceB64)
+        val akaResult = when (val result = sipAkaChallengeForRegistration(subTelephonyManager, registerChallenge.nonceB64)) {
+            is SipAkaChallengeResult.Success -> result.akaResult
+            is SipAkaChallengeResult.SynchronizationFailure -> {
+                Rlog.w(TAG, "AKA AUTS synchronization failure; sending one resynchronization REGISTER")
+                akaDigest = SipRegistrationDigestFactory.createSynchronizationFailure(
+                    user = user,
+                    realm = registerChallenge.realm,
+                    uri = "sip:$realm",
+                    nonceB64 = registerChallenge.nonceB64,
+                    opaque = registerChallenge.opaque,
+                    auts = result.auts,
+                    useNonsessAka = requireNonsessAka || registerChallenge.qop == null,
+                )
+                register(plainSocket.gWriter())
+
+                val resyncReply = readPlainRegisterReply()
+                Rlog.d(TAG, "Received after AKA AUTS resynchronization $resyncReply")
+                if (resyncReply !is SipResponse || resyncReply.statusCode != 401) {
+                    Rlog.w(TAG, "Didn't get expected 401 after AKA AUTS resynchronization, aborting")
+                    plainSocket.close()
+                    failConnectAndRetry("AKA AUTS resynchronization REGISTER did not return fresh 401")
+                    return
+                }
+
+                plainRegReply = resyncReply
+                registerChallenge = SipRegisterChallengeParser.parse(
+                    response = plainRegReply,
+                    fallbackRealm = realm,
+                )
+                Rlog.d(TAG, "Requesting AKA challenge after AUTS resynchronization")
+                when (val retryResult = sipAkaChallengeForRegistration(subTelephonyManager, registerChallenge.nonceB64)) {
+                    is SipAkaChallengeResult.Success -> retryResult.akaResult
+                    is SipAkaChallengeResult.SynchronizationFailure -> {
+                        Rlog.w(TAG, "AKA still returns AUTS after one resynchronization REGISTER; aborting")
+                        plainSocket.close()
+                        failConnectAndRetry("AKA still out of sync after AUTS resynchronization")
+                        return
+                    }
+                }
+            }
+        }
+
+        plainSocket.close()
+
         akaDigest = SipRegistrationDigestFactory.create(
             user = user,
             realm = registerChallenge.realm,

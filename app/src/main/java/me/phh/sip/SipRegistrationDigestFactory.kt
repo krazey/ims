@@ -32,4 +32,35 @@ object SipRegistrationDigestFactory {
             ).toString()
         }
     }
+
+    fun createSynchronizationFailure(
+        user: String,
+        realm: String,
+        uri: String,
+        nonceB64: String,
+        opaque: String?,
+        auts: ByteArray,
+        useNonsessAka: Boolean,
+    ): String {
+        return if (useNonsessAka) {
+            SipAkaSynchronizationDigest(
+                user = user,
+                realm = realm,
+                uri = uri,
+                nonceB64 = nonceB64,
+                opaque = opaque,
+                auts = auts,
+            ).toString()
+        } else {
+            SipAkaSynchronizationDigestSess(
+                user = user,
+                realm = realm,
+                uri = uri,
+                nonceB64 = nonceB64,
+                opaque = opaque,
+                auts = auts,
+            ).toString()
+        }
+    }
+
 }
