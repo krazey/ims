@@ -104,8 +104,11 @@ class SipHandler(val ctxt: Context) {
         val clientSpiS: IpSecManager.SecurityParameterIndex,
         val serverSpiC: IpSecManager.SecurityParameterIndex? = null,
         val serverSpiS: IpSecManager.SecurityParameterIndex? = null,
+        val serverInTransform: IpSecTransform? = null,
+        val serverOutTransform: IpSecTransform? = null,
     )
     lateinit var ipsecSettings: SipIpsecSettings
+    private var ipsecResourcesClosed = true
 
     lateinit private var network: Network
 
@@ -293,12 +296,39 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         smsHandler.clearState()
     }
 
+
+    private fun closeBounded(
+        label: String,
+        timeoutMs: Long = 1_000L,
+        close: () -> Unit,
+    ) {
+        val finished = AtomicBoolean(false)
+        var failure: Throwable? = null
+        val closeThread = thread(name = "PhhImsClose-$label", isDaemon = true) {
+            try {
+                close()
+            } catch (t: Throwable) {
+                failure = t
+            } finally {
+                finished.set(true)
+            }
+        }
+
+        closeThread.join(timeoutMs)
+        if (!finished.get()) {
+            Rlog.w(TAG, "close $label still running after ${timeoutMs}ms; continuing IMS reconnect")
+            return
+        }
+
+        failure?.let { Rlog.d(TAG, "close $label failed", it) }
+    }
+
     private fun closeSipTransports(reason: String) {
         Rlog.w(TAG, "Closing SIP transports: $reason")
-        try { if (this::plainSocket.isInitialized) plainSocket.close() } catch (t: Throwable) { Rlog.d(TAG, "close plainSocket failed", t) }
-        try { if (this::socket.isInitialized) socket.close() } catch (t: Throwable) { Rlog.d(TAG, "close socket failed", t) }
-        try { if (this::serverSocket.isInitialized) serverSocket.serverSocket.close() } catch (t: Throwable) { Rlog.d(TAG, "close TCP server failed", t) }
-        try { if (this::serverSocketUdp.isInitialized) serverSocketUdp.socket.close() } catch (t: Throwable) { Rlog.d(TAG, "close UDP server failed", t) }
+        closeBounded("plainSocket") { if (this::plainSocket.isInitialized) plainSocket.close() }
+        closeBounded("socket") { if (this::socket.isInitialized) socket.close() }
+        closeBounded("TCP server") { if (this::serverSocket.isInitialized) serverSocket.serverSocket.close() }
+        closeBounded("UDP server") { if (this::serverSocketUdp.isInitialized) serverSocketUdp.socket.close() }
     }
 
 
@@ -310,7 +340,7 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
     ) {
         val finished = AtomicBoolean(false)
         var failure: Throwable? = null
-        val connectThread = thread(name = "PhhImsSocketConnect-$label") {
+        val connectThread = thread(name = "PhhImsSocketConnect-$label", isDaemon = true) {
             try {
                 Rlog.d(TAG, "$label SIP socket connect start remote=$pcscfAddr:$remotePort")
                 connection.connect(remotePort)
@@ -337,10 +367,73 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         failure?.let { throw it }
         Rlog.d(TAG, "$label SIP socket connect completed remote=$pcscfAddr:$remotePort")
     }
+
+
+    private fun allocateSecurityParameterIndexWithWatchdog(
+        label: String,
+        address: InetAddress,
+        requestedSpi: Int? = null,
+        timeoutMs: Long = 10_000L,
+    ): IpSecManager.SecurityParameterIndex {
+        val finished = AtomicBoolean(false)
+        var allocated: IpSecManager.SecurityParameterIndex? = null
+        var failure: Throwable? = null
+        val allocThread = thread(name = "PhhImsIpsecAllocate-$label", isDaemon = true) {
+            try {
+                Rlog.d(
+                    TAG,
+                    "$label allocation start address=$address" +
+                        if (requestedSpi != null) " requestedSpi=$requestedSpi" else "",
+                )
+                allocated = if (requestedSpi != null) {
+                    ipSecManager.allocateSecurityParameterIndex(address, requestedSpi)
+                } else {
+                    ipSecManager.allocateSecurityParameterIndex(address)
+                }
+            } catch (t: Throwable) {
+                failure = t
+            } finally {
+                finished.set(true)
+            }
+        }
+
+        allocThread.join(timeoutMs)
+        if (!finished.get()) {
+            val reason = "$label allocation timed out after ${timeoutMs}ms address=$address" +
+                if (requestedSpi != null) " requestedSpi=$requestedSpi" else ""
+            Rlog.w(TAG, reason)
+            throw SocketTimeoutException(reason)
+        }
+
+        failure?.let { throw it }
+        val result = allocated ?: throw SocketTimeoutException("$label allocation returned no SPI")
+        Rlog.d(TAG, "$label allocation completed spi=${result.spi}")
+        return result
+    }
+
+    private fun closeIpsecResources(reason: String) {
+        if (!this::ipsecSettings.isInitialized || ipsecResourcesClosed) return
+        val settings = ipsecSettings
+        ipsecResourcesClosed = true
+        Rlog.w(TAG, "Closing SIP IPsec resources: $reason")
+
+        closeBounded("serverInTransform") { settings.serverInTransform?.close() }
+        closeBounded("serverOutTransform") { settings.serverOutTransform?.close() }
+        closeBounded("serverSpiC") { settings.serverSpiC?.close() }
+        closeBounded("serverSpiS") { settings.serverSpiS?.close() }
+        closeBounded("clientSpiC") { settings.clientSpiC.close() }
+        closeBounded("clientSpiS") { settings.clientSpiS.close() }
+    }
     private fun dropImsConnection(reason: String) {
+        val wasReady = imsReady
         clearCallAndCallbackStateForReconnect()
-        closeSipTransports(reason)
         resetRegistrationStateForConnect()
+        if (wasReady) {
+            Rlog.w(TAG, "Reporting IMS deregistered before reconnect cleanup: $reason")
+            imsFailureCallback?.invoke()
+        }
+        closeSipTransports(reason)
+        closeIpsecResources(reason)
     }
 
     
@@ -429,11 +522,12 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
         Rlog.w(TAG, "Connecting with address $localAddr to $pcscfAddr")
 
-        val clientSpiC = ipSecManager.allocateSecurityParameterIndex(localAddr)
-        val clientSpiS = ipSecManager.allocateSecurityParameterIndex(localAddr, clientSpiC.spi + 1)
+        val clientSpiC = allocateSecurityParameterIndexWithWatchdog("client SPI-C", localAddr)
+        val clientSpiS = allocateSecurityParameterIndexWithWatchdog("client SPI-S", localAddr, clientSpiC.spi + 1)
         ipsecSettings = SipIpsecSettings(
             clientSpiS = clientSpiS,
             clientSpiC = clientSpiC)
+        ipsecResourcesClosed = false
 
         plainSocket = if (isControlSocketUdp)
             SipConnectionUdp(network, pcscfAddr, localAddr)
@@ -526,16 +620,17 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             portS = securityServerParams["port-s"]!!.toInt()
             // spi string is 32 bit unsigned, but ipSecManager wants an int...
             val spiS = securityServerParams["spi-s"]!!.toUInt().toInt()
-            val serverSpiS = ipSecManager.allocateSecurityParameterIndex(pcscfAddr, spiS)
+            val serverSpiS = allocateSecurityParameterIndexWithWatchdog("server SPI-S", pcscfAddr, spiS)
 
             val spiC = securityServerParams["spi-c"]!!.toUInt().toInt()
-            val serverSpiC = ipSecManager.allocateSecurityParameterIndex(pcscfAddr, spiC)
+            val serverSpiC = allocateSecurityParameterIndexWithWatchdog("server SPI-C", pcscfAddr, spiC)
 
             ipsecSettings = SipIpsecSettings(
                 clientSpiS = clientSpiS,
                 clientSpiC = clientSpiC,
                 serverSpiC = serverSpiC,
                 serverSpiS = serverSpiS)
+            ipsecResourcesClosed = false
 
             val ealg = securityServerParams["ealg"] ?: "null"
             val (alg, hmac_key) = if (securityServerParams["alg"] == "hmac-sha-1-96") {
@@ -555,6 +650,14 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
             val serverInTransform = ipSecBuilder.buildTransportModeTransform(pcscfAddr, clientSpiS)
             val serverOutTransform = ipSecBuilder.buildTransportModeTransform(localAddr, serverSpiC)
+            ipsecSettings = SipIpsecSettings(
+                clientSpiS = clientSpiS,
+                clientSpiC = clientSpiC,
+                serverSpiC = serverSpiC,
+                serverSpiS = serverSpiS,
+                serverInTransform = serverInTransform,
+                serverOutTransform = serverOutTransform)
+            ipsecResourcesClosed = false
             socket.enableIpsec(ipSecBuilder, ipSecManager, clientSpiC, serverSpiS)
             serverSocket.enableIpsec(ipSecManager, serverInTransform, serverOutTransform)
             serverSocketUdp.enableIpsec(ipSecManager, serverInTransform, serverOutTransform)
