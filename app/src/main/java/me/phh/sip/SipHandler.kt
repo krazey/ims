@@ -941,11 +941,33 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         connectSipSocketWithWatchdog(socket, portS, "IPsec authenticated")
         updateCommonHeaders(socket)
         register()
-        val regReply = (
+
+        Rlog.d(TAG, "Waiting for authenticated SIP REGISTER response")
+        val authenticatedRegisterReader =
             if (socket is SipConnectionTcp) socket.gReader()
             else if (socket is SipConnectionUdp) serverSocketUdp.gReader()
             else socket.gReader()
-        ).parseMessage()!!
+
+        val regReply = try {
+            authenticatedRegisterReader.parseMessage()
+        } catch (t: Throwable) {
+            Rlog.w(
+                TAG,
+                "Authenticated SIP REGISTER response read failed, aborting SIP",
+                t,
+            )
+            failConnectAndRetry("Authenticated SIP REGISTER response read failed")
+            return
+        }
+
+        if (regReply == null) {
+            Rlog.w(
+                TAG,
+                "Authenticated SIP REGISTER got EOF/no response, aborting SIP",
+            )
+            failConnectAndRetry("Authenticated SIP REGISTER got EOF/no response")
+            return
+        }
         Rlog.d(TAG, "Received $regReply")
 
         if (regReply !is SipResponse || regReply.statusCode != 200) {
