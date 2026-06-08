@@ -1358,70 +1358,215 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         val requestCseq = request.headers["cseq"]?.getOrNull(0).orEmpty()
         val call = currentCall
         val currentCallId = call?.callIdOrNull()
+
         if (call == null || currentCallId != requestCallId) {
             Rlog.w(TAG, "Rejecting UPDATE for non-current dialog: callId=$requestCallId cseq=$requestCseq current=$currentCallId")
             return 481
         }
-        val ipType = if(call.rtpRemoteAddr is Inet6Address) "IP6" else "IP4"
-        val allTracks = listOf(call.amrTrack, call.dtmfTrack).sorted()
-        val mySdp = """
-v=0
-o=- 1 2 IN $ipType ${socket.gLocalAddr().hostAddress}
-s=phh voice call
-c=IN $ipType ${socket.gLocalAddr().hostAddress}
-b=AS:38
-b=RS:0
-b=RR:0
-t=0 0
-m=audio ${call.rtpSocket.localPort} RTP/AVP ${allTracks.joinToString(" ")}
-b=AS:38
-b=RS:0
-b=RR:0
-a=rtpmap:${call.amrTrack} AMR/8000/1
-a=rtpmap:${call.dtmfTrack} telephone-event/8000
-a=${call.amrTrackDesc}
-a=ptime:20
-a=maxptime:240
-a=${call.dtmfTrackDesc}
-a=curr:qos local sendrecv
-a=curr:qos remote sendrecv
-a=des:qos mandatory local sendrecv
-a=des:qos mandatory remote sendrecv
-a=sendrecv
-                       """.trim().toByteArray()
 
-        currentCall = call.copy(sdp = request.body)
-
-        val reply =
-            SipResponse(
-                statusCode = 200,
-                statusString = "OK",
-                headersParam =
-                request.headers.filter { (k, _) ->
-                    k in listOf("cseq", "via", "from", "to", "call-id")
-                } + """
-                    Content-Type: application/sdp
-                    Supported: 100rel, replaces, timer
-                    Require: precondition
-                    Call-ID: ${currentCall!!.callIdOrEmpty()}
-                """.toSipHeadersMap(),
-                body = mySdp
-            )
-        Rlog.d(TAG, "Replying back with $reply")
         val updateCallId = request.headers.callIdOrNull()
         val updateResponseWriter = updateCallId?.let { dispatcher.writerForCallId(it) } ?: socket.gWriter()
-        synchronized(updateResponseWriter) { updateResponseWriter.write(reply.toByteArray()) }
 
-        if(call?.outgoing == false) {
-            val myHeaders2 = call.callHeaders - "rseq" - "content-type" - "require"
-            val msg2 =
-                SipResponse(
-                    statusCode = 180,
-                    statusString = "Ringing",
-                    headersParam = myHeaders2
+        fun writeUpdateReply(reply: SipResponse) {
+            Rlog.d(TAG, "Replying to UPDATE with $reply")
+            synchronized(updateResponseWriter) {
+                updateResponseWriter.write(reply.toByteArray())
+            }
+        }
+
+        val isSdp = request.headers["content-type"]
+            ?.getOrNull(0)
+            ?.startsWith("application/sdp", ignoreCase = true) == true &&
+            request.body.isNotEmpty()
+
+        if (!isSdp) {
+            val reply = SipResponse(
+                statusCode = 200,
+                statusString = "OK",
+                headersParam = request.headers.filter { (k, _) ->
+                    k in listOf("cseq", "via", "from", "to", "call-id")
+                } + """
+                    Supported: 100rel, replaces, timer
+                    Call-ID: $requestCallId
+                    Content-Length: 0
+                """.toSipHeadersMap(),
+                autofill = false,
+            )
+            writeUpdateReply(reply)
+            return 0
+        }
+
+        val sdp = request.body
+            .toString(Charsets.UTF_8)
+            .split("[\\r\\n]+".toRegex())
+            .filter { it.isNotBlank() }
+
+        Rlog.d(TAG, "Handling UPDATE SDP offer: callId=$requestCallId cseq=$requestCseq sdp=$sdp")
+
+        fun sdpElement(command: String): String? {
+            val v = sdp.firstOrNull { it.startsWith("$command=") } ?: return null
+            return v.substring(2)
+        }
+
+        val sdpConnectionData = sdpElement("c")
+        val sdpMedia = sdpElement("m")
+        if (sdpConnectionData == null || sdpMedia == null) {
+            Rlog.w(TAG, "Rejecting UPDATE without usable c=/m= SDP: callId=$requestCallId cseq=$requestCseq")
+            return 488
+        }
+
+        val rtpRemote = sdpConnectionData.split(" ").getOrNull(2)
+        val rtpRemoteAddr = rtpRemote?.let { InetAddress.getByName(it) }
+        val mediaParts = sdpMedia.trim().split("\\s+".toRegex())
+        val rtpRemotePort = mediaParts.getOrNull(1)?.toIntOrNull()
+        val offeredPayloads = mediaParts.drop(3).mapNotNull { it.toIntOrNull() }.toSet()
+
+        if (rtpRemoteAddr == null || rtpRemotePort == null || offeredPayloads.isEmpty()) {
+            Rlog.w(
+                TAG,
+                "Rejecting UPDATE with incomplete media address/payloads: " +
+                    "callId=$requestCallId cseq=$requestCseq c=$sdpConnectionData m=$sdpMedia",
+            )
+            return 488
+        }
+
+        val attributes = sdp.filter { it.startsWith("a=") }.map { it.substring(2) }
+
+        fun trackRequirements(track: Int): String? {
+            return attributes.firstOrNull { it.startsWith("fmtp:$track") }
+        }
+
+        fun lookTrackMatching(
+            codec: String,
+            additional: String = "",
+            notAdditional: String = "",
+        ): Pair<Int, String>? {
+            val maps = attributes.filter { it.startsWith("rtpmap:") && it.contains(codec) }
+            val matches = maps.mapNotNull { m ->
+                val track = m.split("[: ]+".toRegex()).getOrNull(1)?.toIntOrNull()
+                if (track != null && offeredPayloads.contains(track)) Pair(track, m) else null
+            }
+            val sorted = matches.sortedBy { m ->
+                val fmtp = trackRequirements(m.first).orEmpty()
+                when {
+                    // Our RTP encoder currently sends AMR-NB bandwidth-efficient frames.
+                    // SDP without octet-align defaults to octet-align=0, so prefer that
+                    // over octet-align=1 when carriers offer both forms in UPDATE.
+                    codec.startsWith("AMR") && fmtp.contains("octet-align=1", ignoreCase = true) -> 100
+                    codec.startsWith("AMR") && fmtp.isEmpty() -> 0
+                    notAdditional.isNotEmpty() && fmtp.contains(notAdditional, ignoreCase = true) -> 90
+                    additional.isNotEmpty() && fmtp.contains(additional, ignoreCase = true) -> 0
+                    else -> 10
+                }
+            }
+            Rlog.d(TAG, "UPDATE matching $codec offered=$offeredPayloads got=$sorted")
+            return sorted.firstOrNull()
+        }
+
+        val amr = lookTrackMatching("AMR/8000", notAdditional = "octet-align=1")
+        if (amr == null) {
+            Rlog.w(TAG, "Rejecting UPDATE: no compatible AMR/8000 payload in offer callId=$requestCallId offered=$offeredPayloads")
+            return 488
+        }
+        val (amrTrack, amrTrackDesc) = amr
+        val amrFmtpAnswer = trackRequirements(amrTrack)
+            ?: "fmtp:$amrTrack mode-set=7;octet-align=0;max-red=0"
+
+        val dtmf = lookTrackMatching("telephone-event/8000")
+        if (dtmf == null) {
+            Rlog.w(TAG, "Rejecting UPDATE: no compatible telephone-event/8000 payload in offer callId=$requestCallId offered=$offeredPayloads")
+            return 488
+        }
+        val (dtmfTrack, dtmfTrackDesc) = dtmf
+
+        try {
+            if (!call.rtpSocket.isConnected ||
+                call.rtpSocket.inetAddress != rtpRemoteAddr ||
+                call.rtpSocket.port != rtpRemotePort) {
+                call.rtpSocket.connect(rtpRemoteAddr, rtpRemotePort)
+                Rlog.d(
+                    TAG,
+                    "UPDATE connected RTP socket to ${rtpRemoteAddr}:${rtpRemotePort} " +
+                        "local=${call.rtpSocket.localAddress}:${call.rtpSocket.localPort} callId=$requestCallId",
                 )
+            }
+        } catch (t: Throwable) {
+            Rlog.w(TAG, "Failed to connect RTP socket from UPDATE to ${rtpRemoteAddr}:${rtpRemotePort} callId=$requestCallId", t)
+        }
+
+        val allTracks = listOf(amrTrack, dtmfTrack).sorted()
+        val ipType = if (socket.gLocalAddr() is Inet6Address) "IP6" else "IP4"
+        val owner = request.destination.substringAfter("sip:").substringBefore("@").ifBlank { "-" }
+        val sdpVersion = call.localSdpVersion.incrementAndGet()
+        val remoteMaxptime = attributes.firstOrNull { it.startsWith("maxptime:") } ?: "maxptime:240"
+
+        val answerSdpLines = listOf(
+            "v=0",
+            "o=$owner 1 $sdpVersion IN $ipType ${socket.gLocalAddr().hostAddress}",
+            "s=phh voice call",
+            "c=IN $ipType ${socket.gLocalAddr().hostAddress}",
+            "b=AS:38",
+            "b=RS:0",
+            "b=RR:0",
+            "t=0 0",
+            "m=audio ${call.rtpSocket.localPort} RTP/AVP ${allTracks.joinToString(" ")}",
+            "b=AS:38",
+            "b=RS:0",
+            "b=RR:0",
+            "a=$amrTrackDesc",
+            "a=ptime:20",
+            "a=$remoteMaxptime",
+            "a=$dtmfTrackDesc",
+            "a=$amrFmtpAnswer",
+            "a=fmtp:$dtmfTrack 0-15",
+            "a=curr:qos local sendrecv",
+            "a=curr:qos remote sendrecv",
+            "a=des:qos mandatory local sendrecv",
+            "a=des:qos mandatory remote sendrecv",
+            "a=conf:qos remote sendrecv",
+            "a=sendrecv",
+        )
+        val answerSdp = answerSdpLines.joinToString("\\r\\n").toByteArray(Charsets.US_ASCII)
+
+        currentCall = call.copy(
+            amrTrack = amrTrack,
+            amrTrackDesc = amrTrackDesc,
+            dtmfTrack = dtmfTrack,
+            dtmfTrackDesc = dtmfTrackDesc,
+            rtpRemoteAddr = rtpRemoteAddr,
+            rtpRemotePort = rtpRemotePort,
+            sdp = answerSdp,
+            remoteContact = request.headers["contact"]?.getOrNull(0)
+                ?.let { extractDestinationFromContact(it) }
+                ?: call.remoteContact,
+        )
+
+        val reply = SipResponse(
+            statusCode = 200,
+            statusString = "OK",
+            headersParam = request.headers.filter { (k, _) ->
+                k in listOf("cseq", "via", "from", "to", "call-id")
+            } + """
+                Content-Type: application/sdp
+                Supported: 100rel, replaces, timer
+                Require: precondition
+                Call-ID: ${currentCall!!.callIdOrEmpty()}
+            """.toSipHeadersMap(),
+            body = answerSdp,
+        )
+        writeUpdateReply(reply)
+
+        if (!call.outgoing) {
+            val myHeaders2 = call.callHeaders - "rseq" - "content-type" - "require"
+            val msg2 = SipResponse(
+                statusCode = 180,
+                statusString = "Ringing",
+                headersParam = myHeaders2,
+            )
             Rlog.d(TAG, "Sending $msg2")
-            synchronized(updateResponseWriter) { updateResponseWriter.write(msg2.toByteArray()) }
+            synchronized(updateResponseWriter) {
+                updateResponseWriter.write(msg2.toByteArray())
+            }
         }
 
         return 0
