@@ -1655,6 +1655,9 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             return sorted.firstOrNull()
         }
 
+        // Keep the selected speech payload first in SDP answers. Sorting payload IDs can
+        // put telephone-event before AMR-WB, e.g. m=audio ... 96 104, which some
+        // IMS cores reject as an offer/answer error during precondition UPDATE.
         val selectedAudioCodec = call.audioCodec
         val amr = lookTrackMatching(speechCodecRtpmapName(selectedAudioCodec), notAdditional = "octet-align=1")
         if (amr == null) {
@@ -1687,7 +1690,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
             Rlog.w(TAG, "Failed to connect RTP socket from UPDATE to ${rtpRemoteAddr}:${rtpRemotePort} callId=$requestCallId", t)
         }
 
-        val allTracks = listOf(amrTrack, dtmfTrack).sorted()
+        val allTracks = listOf(amrTrack, dtmfTrack)
         val ipType = if (socket.gLocalAddr() is Inet6Address) "IP6" else "IP4"
         val owner = request.destination.substringAfter("sip:").substringBefore("@").ifBlank { "-" }
         val sdpVersion = call.localSdpVersion.incrementAndGet()
@@ -3514,7 +3517,7 @@ a=sendrecv
         val amrFmtpAnswer =
             trackRequirements(amrTrack) ?: defaultSpeechFmtpAnswer(amrTrack, selectedAudioCodec)
         val remoteMaxptime = attributes.firstOrNull { it.startsWith("maxptime:") } ?: "maxptime:20"
-        val allTracks = listOf(amrTrack, dtmfTrack).sorted()
+        val allTracks = listOf(amrTrack, dtmfTrack)
         val sdpBandwidthAs = sdpBandwidthAsKbps(selectedAudioCodec)
         val owner = request.destination.substringAfter("sip:").substringBefore("@")
         val ipType = if (socket.gLocalAddr() is Inet6Address) "IP6" else "IP4"
@@ -3731,7 +3734,7 @@ a=sendrecv
         val (dtmfTrack, dtmfTrackDesc) =
             lookTrackMatching(telephoneEventRtpmapName(selectedAudioCodec)) ?: return 488
 
-        val allTracks = listOf(amrTrack, dtmfTrack).sorted()
+        val allTracks = listOf(amrTrack, dtmfTrack)
         val sdpBandwidthAs = sdpBandwidthAsKbps(selectedAudioCodec)
         // destination is sip:<owner>@realm, extract owner
         val owner = request.destination.substringAfter("sip:").substringBefore("@")
