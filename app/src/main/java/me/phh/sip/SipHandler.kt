@@ -2444,7 +2444,10 @@ a=sendrecv
                     val finalInviteCallId = resp.callIdOrEmpty()
                     val finalInviteAfterLocalCancel = pendingOutgoingInvite?.callId == finalInviteCallId &&
                         pendingOutgoingInvite?.cancelSent?.get() == true
-                    if (finalInviteAfterLocalCancel) {
+                                        val finalInviteHasSdp =
+                        resp.headers["content-type"]?.getOrNull(0) == "application/sdp"
+
+if (finalInviteAfterLocalCancel) {
                         Rlog.w(TAG, "Final INVITE answer arrived after local CANCEL; ACK first, then BYE once dialog state exists callId=$finalInviteCallId")
                     }
                     // ACK C-Seq must be the same as INVITE C-Seq
@@ -2501,7 +2504,7 @@ a=sendrecv
                         currentCall = null
                         clearPendingOutgoingInvite(finalInviteCallId, closeRtpSocket = true, reason = "final answer without SDP after local CANCEL")
                         return@setResponseCallback true
-                    } else {
+                    } else if (!finalInviteHasSdp) {
                         clearPendingOutgoingInvite(finalInviteCallId, closeRtpSocket = false, reason = "final INVITE answer without SDP")
                         val confirmedOutgoingCall = currentCall
                     if (confirmedOutgoingCall != null) {
