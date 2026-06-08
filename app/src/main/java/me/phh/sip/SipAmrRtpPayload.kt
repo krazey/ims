@@ -123,7 +123,11 @@ internal object SipAmrRtpPayload {
         // AMR-WB is not selected yet. When it is enabled, this helper is the
         // single place to adjust codec-mode request/no-data framing if needed.
         val noDataPayload = when (audioCodec.sdpCodecName) {
-            "AMR", "AMR-WB" -> byteArrayOf(0x77.toByte(), 0xc0.toByte())
+            // Preserve current AMR-NB behavior: CMR=7 requests 12.2 kbit/s.
+            "AMR" -> byteArrayOf(0x77.toByte(), 0xc0.toByte())
+            // For AMR-WB, do not request a specific codec mode during no-data.
+            // CMR=15, F=0, FT=15, Q=1.
+            "AMR-WB" -> byteArrayOf(0xf7.toByte(), 0xc0.toByte())
             else -> byteArrayOf(0x77.toByte(), 0xc0.toByte())
         }
 

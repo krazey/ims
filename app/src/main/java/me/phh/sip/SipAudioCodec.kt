@@ -3,7 +3,7 @@ package me.phh.sip
 
 import android.telephony.Rlog
 
-internal data class NegotiatedAudioCodec(
+data class NegotiatedAudioCodec(
     val name: String,
     val sdpCodecName: String,
     val mimeType: String,
