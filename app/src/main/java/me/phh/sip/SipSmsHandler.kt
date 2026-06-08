@@ -13,7 +13,6 @@ internal class SipSmsHandler(
     private val tag: String,
     private val ctxt: Context,
     private val subId: Int,
-    private val forceSmscProvider: () -> String?,
     private val realmProvider: () -> String,
     private val commonHeadersProvider: () -> SipHeadersMap,
     private val mySipProvider: () -> String,
@@ -117,7 +116,7 @@ internal class SipSmsHandler(
 
         val realm = realmProvider()
         val mySip = mySipProvider()
-        val smsc = frameworkSmsc ?: forceSmscProvider() ?: identitySmsc ?: managerSmsc
+        val smsc = frameworkSmsc ?: identitySmsc ?: managerSmsc
 
         // RP-DATA destination address. Passing an empty string makes
         // PhoneNumberUtils.numberToCalledPartyBCD("") return null and crashes
