@@ -2362,7 +2362,7 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
         if (rewritten != lines) {
             Rlog.d(TAG, "Completing incoming final 200 OK precondition SDP: callId=$callId")
         }
-        return rewritten.joinToString("\r\n").toByteArray(Charsets.US_ASCII)
+        return (rewritten.joinToString("\r\n") + "\r\n").toByteArray(Charsets.US_ASCII)
     }
 
     fun acceptCall() {
@@ -2806,32 +2806,47 @@ if (pcscfs.isNotEmpty() && abandonnedBecauseOfNoPcscf) {
 
             val ipType = if(localAddr is Inet6Address) "IP6" else "IP4"
 
-            val sdp = """
-v=0
-o=- 1 2 IN $ipType ${socket.gLocalAddr().hostAddress}
-s=phh voice call
-c=IN $ipType ${socket.gLocalAddr().hostAddress}
-b=AS:$offerBandwidthAs
-b=RS:0
-b=RR:0
-t=0 0
-m=audio ${rtpSocket.localPort} RTP/AVP ${allTracks.joinToString(" ")}
-b=AS:$offerBandwidthAs
-b=RS:0
-b=RR:0
-a=ptime:20
-a=maxptime:240
-${if (offerAmrWb) "a=rtpmap:$amrWbTrack AMR-WB/16000\r\na=fmtp:$amrWbTrack octet-align=0;mode-change-capability=2;max-red=0\r\na=rtpmap:$dtmfWbTrack telephone-event/16000\r\na=fmtp:$dtmfWbTrack 0-15" else ""}
-a=rtpmap:$amrNbTrack AMR/8000/1
-a=fmtp:$amrNbTrack mode-change-capability=2;octet-align=0;max-red=0
-a=rtpmap:$dtmfNbTrack telephone-event/8000
-a=fmtp:$dtmfNbTrack 0-15
-a=curr:qos local none
-a=curr:qos remote none
-a=des:qos optional local sendrecv
-a=des:qos optional remote sendrecv
-a=sendrecv
-                       """.trim().toByteArray()
+            val sdpLines = mutableListOf(
+               "v=0",
+               "o=- 1 2 IN $ipType ${socket.gLocalAddr().hostAddress}",
+               "s=phh voice call",
+               "c=IN $ipType ${socket.gLocalAddr().hostAddress}",
+               "b=AS:$offerBandwidthAs",
+               "b=RS:0",
+               "b=RR:0",
+               "t=0 0",
+               "m=audio ${rtpSocket.localPort} RTP/AVP ${allTracks.joinToString(" ")}",
+               "b=AS:$offerBandwidthAs",
+               "b=RS:0",
+               "b=RR:0",
+               "a=ptime:20",
+               "a=maxptime:240",
+           )
+           if (offerAmrWb) {
+               sdpLines += listOf(
+                   "a=rtpmap:$amrWbTrack AMR-WB/16000",
+                   "a=fmtp:$amrWbTrack octet-align=0;mode-change-capability=2;max-red=0",
+                   "a=rtpmap:$dtmfWbTrack telephone-event/16000",
+                   "a=fmtp:$dtmfWbTrack 0-15",
+               )
+           }
+           sdpLines += listOf(
+               "a=rtpmap:$amrNbTrack AMR/8000/1",
+               "a=fmtp:$amrNbTrack mode-change-capability=2;octet-align=0;max-red=0",
+               "a=rtpmap:$dtmfNbTrack telephone-event/8000",
+               "a=fmtp:$dtmfNbTrack 0-15",
+               "a=curr:qos local none",
+               "a=curr:qos remote none",
+               "a=des:qos optional local sendrecv",
+               "a=des:qos optional remote sendrecv",
+               "a=sendrecv",
+           )
+           /*
+            * Some IMS SBCs are strict about SDP body framing and expect the
+            * outgoing INVITE SDP body to end with a final CRLF after the last
+            * SDP line, not only CRLF between lines.
+            */
+           val sdp = (sdpLines.joinToString("\r\n") + "\r\n").toByteArray(Charsets.US_ASCII)
 
             val normalizedPhoneNumber = normalizeOutgoingDialTargetForTelUri(phoneNumber)
             val to = if (normalizedPhoneNumber.startsWith("+")) {
@@ -4080,7 +4095,12 @@ a=sendrecv
                 )
             }
             sdpLines += "a=sendrecv"
-            val mySdp = sdpLines.joinToString("\r\n").toByteArray(Charsets.US_ASCII)
+            /*
+             * Keep generated incoming SDP bodies strictly CRLF-framed, including
+             * the final line terminator. Some IMS SBCs reject/tear down the call
+             * after the 200 OK when the SDP body lacks the trailing CRLF.
+             */
+            val mySdp = (sdpLines.joinToString("\r\n") + "\r\n").toByteArray(Charsets.US_ASCII)
 
             // Generate a single local tag for all responses in this dialog (RFC 3261 §12.1.1).
             // Important for tel: URIs: without <> the appended ;tag can be parsed as a TEL URI
