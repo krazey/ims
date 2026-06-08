@@ -336,6 +336,62 @@ class SipHandler(
 
     private val inviteSessionTimerPolicy = SipInviteSessionTimerPolicy(TAG)
     private val smsFallbackPolicy = SipSmsFallbackPolicy(TAG)
+    /*
+     * UDP SIP responses must be sent on the same 5-tuple that delivered the
+     * request. A plain ByteArrayOutputStream only works for immediate responses
+     * generated before the UDP receive loop returns; it breaks delayed dialog
+     * responses such as incoming final 200 OK and can make peers retransmit
+     * in-dialog UPDATE because the 200 OK was not delivered promptly.
+     */
+    private inner class UdpSipResponseWriter(
+        private val remoteAddress: InetAddress,
+        private val remotePort: Int,
+    ) : OutputStream() {
+        private val pendingSingleByteWrites = ByteArrayOutputStream()
+
+        override fun write(b: Int) {
+            pendingSingleByteWrites.write(b)
+        }
+
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            if (len <= 0) return
+            flushPendingSingleByteWrites()
+            val bytes = b.copyOfRange(off, off + len)
+            sendDatagram(bytes)
+        }
+
+        override fun flush() {
+            flushPendingSingleByteWrites()
+        }
+
+        private fun flushPendingSingleByteWrites() {
+            val bytes = pendingSingleByteWrites.toByteArray()
+            if (bytes.isEmpty()) return
+            pendingSingleByteWrites.reset()
+            sendDatagram(bytes)
+        }
+
+        private fun sendDatagram(bytes: ByteArray) {
+            if (bytes.isEmpty()) return
+            val firstLine = bytes.toString(Charsets.US_ASCII)
+                .lineSequence()
+                .firstOrNull()
+                .orEmpty()
+
+            synchronized(serverSocketUdp.socket) {
+                serverSocketUdp.socket.send(
+                    DatagramPacket(bytes, bytes.size, remoteAddress, remotePort),
+                )
+            }
+
+            Rlog.d(
+                TAG,
+                "UDP SIP response sent bytes=${bytes.size} " +
+                    "target=$remoteAddress:$remotePort firstLine=$firstLine",
+            )
+        }
+    }
+
     // SIP responses must be written back on the same transport flow that delivered the request.
     // This is especially important for incoming INVITE over the TCP server socket: writing the
     // 180/200 to the registration/control socket can make the P-CSCF ignore the final response.
@@ -1440,8 +1496,6 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             try {
                 val bufferIn = ByteArray(128 * 1024)
                 val dgramPacketIn = DatagramPacket(bufferIn, bufferIn.size)
-                val writer = ByteArrayOutputStream()
-
                 while (true) {
                     dgramPacketIn.length = bufferIn.size
                     serverSocketUdp.socket.receive(dgramPacketIn)
@@ -1449,13 +1503,11 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
                     val baIs = ByteArrayInputStream(dgramPacketIn.data, dgramPacketIn.offset, dgramPacketIn.length)
                     val reader = baIs.sipReader()
+                    val writer = UdpSipResponseWriter(dgramPacketIn.address, dgramPacketIn.port)
                     while (parseMessage(reader, writer)) {
                     }
 
-                    val writerOut = writer.toByteArray()
-                    val dgramPacketOut = DatagramPacket(writerOut, writerOut.size, dgramPacketIn.address, dgramPacketIn.port)
-                    serverSocketUdp.socket.send(dgramPacketOut)
-                    writer.reset()
+                    writer.flush()
                 }
             } catch (t: Throwable) {
                 if (isStaleSipReaderLoop(readerGeneration, "UDP server SIP socket lost")) {
