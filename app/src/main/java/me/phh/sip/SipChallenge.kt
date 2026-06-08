@@ -14,6 +14,12 @@ sealed class SipAkaChallengeResult {
 
 private const val TAG = "PHH SipChallenge"
 
+private fun quoteDigestOpaque(opaque: String?): String {
+    if (opaque == null) return ""
+    val escaped = opaque.replace("\\", "\\\\").replace("\"", "\\\"")
+    return ",opaque=\"$escaped\""
+}
+
 fun sipAkaChallenge(tm: TelephonyManager, nonceB64: String): SipAkaResult {
     return when (val result = sipAkaChallengeForRegistration(tm, nonceB64)) {
         is SipAkaChallengeResult.Success -> result.akaResult
@@ -130,7 +136,7 @@ data class SipAkaDigestSess(
 
     override fun toString(): String =
         """Digest username="$user",realm="$realm",nonce="$nonceB64",uri="$uri",response="$digest",algorithm=AKAv1-MD5,cnonce="$cnonce",qop=auth,nc=$nonceCount""" +
-            (if (opaque != null) ",opaque=$opaque" else "")
+            quoteDigestOpaque(opaque)
 }
 
 data class SipAkaSynchronizationDigestSess(
@@ -165,7 +171,7 @@ data class SipAkaSynchronizationDigestSess(
     override fun toString(): String =
         "Digest username=\"$user\",realm=\"$realm\",nonce=\"$nonceB64\",uri=\"$uri\"," +
                 "response=\"$digest\",algorithm=AKAv1-MD5,cnonce=\"$cnonce\",qop=auth,nc=$nonceCount" +
-                (if (opaque != null) ",opaque=$opaque" else "") +
+                quoteDigestOpaque(opaque) +
                 ",auts=\"$autsB64\""
 }
 
@@ -194,7 +200,7 @@ data class SipAkaDigest(
 
     override fun toString(): String =
         """Digest username="$user",realm="$realm",nonce="$nonceB64",uri="$uri",response="$digest",algorithm=AKAv1-MD5""" +
-            (if (opaque != null) ",opaque=$opaque" else "")
+            quoteDigestOpaque(opaque)
 }
 
 data class SipAkaSynchronizationDigest(
@@ -225,7 +231,7 @@ data class SipAkaSynchronizationDigest(
     override fun toString(): String =
         "Digest username=\"$user\",realm=\"$realm\",nonce=\"$nonceB64\",uri=\"$uri\"," +
                 "response=\"$digest\",algorithm=AKAv1-MD5" +
-                (if (opaque != null) ",opaque=$opaque" else "") +
+                quoteDigestOpaque(opaque) +
                 ",auts=\"$autsB64\""
 }
 
