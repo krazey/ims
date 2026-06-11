@@ -9,6 +9,23 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 object SipDownlinkPcmPlayout {
+    private const val DOWNLINK_UNDERRUN_CONCEALMENT_FRAMES = 6
+
+    private fun attenuatePcm16LeFrame(frame: ByteArray, gainShift: Int): ByteArray {
+        val out = ByteArray(frame.size)
+        var i = 0
+        while (i + 1 < frame.size) {
+            val sample =
+                (frame[i].toInt() and 0xff) or
+                    (frame[i + 1].toInt() shl 8)
+            val scaled = sample.toShort().toInt() shr gainShift
+            out[i] = (scaled and 0xff).toByte()
+            out[i + 1] = ((scaled shr 8) and 0xff).toByte()
+            i += 2
+        }
+        return out
+    }
+
     fun start(
         logTag: String,
         audioTrack: AudioTrack,
@@ -27,6 +44,7 @@ object SipDownlinkPcmPlayout {
             }
 
             var fillerFrames = 0
+            var lastGoodPcmFrame: ByteArray? = null
             var nextWriteAtMs = SystemClock.elapsedRealtime() + 60L
             Rlog.d(logTag, "Downlink PCM playout started: frameBytes=${buffers.frameBytes} codec=${audioCodec.name}/${audioCodec.sampleRate} gen=$generation")
             try {
@@ -35,10 +53,34 @@ object SipDownlinkPcmPlayout {
                     val sleepMs = nextWriteAtMs - now
                     if (sleepMs > 0L) Thread.sleep(sleepMs.coerceAtMost(40L))
 
-                    val pcm = buffers.pcmQueue.poll() ?: buffers.silenceFrame
-                    if (pcm === buffers.silenceFrame) {
+                    val queuedPcm = buffers.pcmQueue.poll()
+                    val pcm =
+                        if (queuedPcm != null) {
+                            lastGoodPcmFrame = queuedPcm
+                            queuedPcm
+                        } else {
+                            val last = lastGoodPcmFrame
+                            if (last != null && fillerFrames < DOWNLINK_UNDERRUN_CONCEALMENT_FRAMES) {
+                                attenuatePcm16LeFrame(
+                                    last,
+                                    gainShift = (fillerFrames + 2).coerceAtMost(8),
+                                )
+                            } else {
+                                buffers.silenceFrame
+                            }
+                        }
+
+                    if (queuedPcm == null) {
                         fillerFrames++
-                        if (fillerFrames == 1 || fillerFrames % 50 == 0) {
+                        if (pcm !== buffers.silenceFrame) {
+                            if (fillerFrames == 1 || fillerFrames == DOWNLINK_UNDERRUN_CONCEALMENT_FRAMES) {
+                                Rlog.d(
+                                    logTag,
+                                    "Downlink PCM playout concealed underrun frames=$fillerFrames " +
+                                        "queued=${buffers.pcmQueue.size} gen=$generation",
+                                )
+                            }
+                        } else if (fillerFrames == 1 || fillerFrames % 50 == 0) {
                             Rlog.d(logTag, "Downlink PCM playout filler frames=$fillerFrames queued=${buffers.pcmQueue.size} gen=$generation")
                         }
                     } else if (fillerFrames > 0) {
