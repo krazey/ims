@@ -123,8 +123,8 @@ class SipConnectionTcp(
     var localAddr: InetAddress
     var localPort: Int
     var remotePort: Int = 0
-    lateinit var writer: OutputStream
-    lateinit var reader: SipReader
+    private var writer: OutputStream? = null
+    private var reader: SipReader? = null
     // we need to keep the transform around or the ipsec transform
     // gets destroyed while still in use
     lateinit var inTransform: IpSecTransform
@@ -157,11 +157,29 @@ class SipConnectionTcp(
     }
 
     override fun gWriter(): OutputStream {
-        return writer
+        if (!connected || socket.isClosed) {
+            throw java.io.IOException(
+                "TCP SIP writer is unavailable because the socket is not connected/open; " +
+                    "remote=$remoteAddr:$remotePort local=$localAddr:$localPort connected=$connected closed=${socket.isClosed}"
+            )
+        }
+        return writer ?: throw java.io.IOException(
+            "TCP SIP writer is unavailable because connect did not publish a writer; " +
+                "remote=$remoteAddr:$remotePort local=$localAddr:$localPort connected=$connected closed=${socket.isClosed}"
+        )
     }
 
     override fun gReader(): SipReader {
-        return reader
+        if (!connected || socket.isClosed) {
+            throw java.io.IOException(
+                "TCP SIP reader is unavailable because the socket is not connected/open; " +
+                    "remote=$remoteAddr:$remotePort local=$localAddr:$localPort connected=$connected closed=${socket.isClosed}"
+            )
+        }
+        return reader ?: throw java.io.IOException(
+            "TCP SIP reader is unavailable because connect did not publish a reader; " +
+                "remote=$remoteAddr:$remotePort local=$localAddr:$localPort connected=$connected closed=${socket.isClosed}"
+        )
     }
 
     override fun gLocalPort(): Int {
@@ -173,6 +191,7 @@ class SipConnectionTcp(
     }
 
     override fun close() {
+        connected = false
         abortTcpSocketFirst(socket, "TCP client socket")
         removeTcpTransportModeTransforms(ipSecManager, socket, "TCP client socket")
         if (this::inTransform.isInitialized) {

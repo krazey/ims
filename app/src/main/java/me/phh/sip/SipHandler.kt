@@ -1267,7 +1267,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         if (lp == null) {
             Rlog.w(TAG, "No link properties for IMS network")
             imsFailureCallback?.invoke()
-            scheduleImsNetworkRequestRestart("No link properties for current IMS network")
+            scheduleImsNetworkRequestRestart("No link properties for current IMS network", 1_000L)
             return false
         }
         imsRegistrationTech = detectRegistrationTech(lp)
@@ -1742,6 +1742,25 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
     }
 
     fun connect() {
+        try {
+            connectInnerAfterX1sImsLossHardening()
+        } catch (t: Throwable) {
+            if (t is kotlinx.coroutines.CancellationException) throw t
+
+            val retryReason = "connect/register failed: ${t.javaClass.simpleName}"
+            Rlog.e(TAG, "IMS connect/register attempt failed; dropping stale SIP state and retrying IMS network request", t)
+            try {
+                dropImsConnection(retryReason)
+            } catch (cleanup: Throwable) {
+                Rlog.w(TAG, "Failed to drop stale SIP state after $retryReason", cleanup)
+            }
+            abandonnedBecauseOfNoPcscf = true
+            imsFailureCallback?.invoke()
+            scheduleImsNetworkRequestRestart(retryReason, 1_000L)
+        }
+    }
+
+    private fun connectInnerAfterX1sImsLossHardening() {
         if (!prepareImsEndpointForConnect()) {
             return
         }
@@ -1889,7 +1908,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             dropImsConnection("IMS network lost")
             abandonnedBecauseOfNoPcscf = true
             imsFailureCallback?.invoke()
-            scheduleImsNetworkRequestRestart("IMS network lost $lostNetwork")
+            scheduleImsNetworkRequestRestart("IMS network lost $lostNetwork", 1_000L)
         }
     }
 
@@ -2175,7 +2194,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         Rlog.d(TAG, "Requesting IMS network ${imsDualSimDebugContext()}")
         if (!isRatReadyForImsNetworkRequest()) {
             Rlog.w(TAG, "Deferring IMS network request until LTE/NR/IWLAN is back")
-            scheduleImsNetworkRequestRestart("RAT not ready for IMS network request")
+            scheduleImsNetworkRequestRestart("RAT not ready for IMS network request", 3_000L)
             return
         }
         logWfcImsRequestPolicyIfNeeded()

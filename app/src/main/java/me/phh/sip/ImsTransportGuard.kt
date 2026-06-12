@@ -132,10 +132,7 @@ internal class ImsTransportGuard(
         }
 
         if (actions.isImsReady()) {
-            Rlog.w(tag, "Reporting IMS deregistered because current IMS network is suspended: $reason")
-            actions.setImsReadyForTransportSuppression(false)
-            readySuppressedByNetworkSuspension = true
-            actions.notifyImsFailure()
+            Rlog.w(tag, "Keeping IMS registered during temporary current-network suspension grace: $reason")
         } else {
             Rlog.w(tag, "Current IMS network suspended while IMS is not ready: $reason")
         }
@@ -172,11 +169,11 @@ internal class ImsTransportGuard(
             actions.invalidatePendingReconnects("IMS network suspended")
             actions.dropImsConnection(dropReason)
             actions.setAbandonedBecauseOfNoPcscf()
-            actions.scheduleImsNetworkRequestRestart(dropReason, 1000L)
+            actions.scheduleImsNetworkRequestRestart(dropReason, 5_000L)
         }, SUSPENSION_GRACE_MS)
     }
 
     private companion object {
-        const val SUSPENSION_GRACE_MS = 750L
+        const val SUSPENSION_GRACE_MS = 8_000L
     }
 }
