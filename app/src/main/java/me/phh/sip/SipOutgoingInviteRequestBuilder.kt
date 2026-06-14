@@ -1,6 +1,7 @@
 package me.phh.sip
 
 import android.telephony.Rlog
+import android.telephony.PhoneNumberUtils
 
 internal data class OutgoingInviteRequestContext(
     val request: SipRequest,
@@ -25,6 +26,47 @@ private data class OutgoingInviteCarrierRequestShape(
 )
 
 internal object SipOutgoingInviteRequestBuilder {
+
+    // Generic short service TEL URI policy.
+    //
+    // Short carrier/public service numbers should stay local:
+    //   542    -> tel:542
+    //   116117 -> tel:116117
+    //
+    // Adding the generic ims.mnc/mcc phone-context can make carriers interpret
+    // the number in the wrong home-network context, which broke Vodafone TR 542.
+    //
+    // Emergency numbers are deliberately excluded here. They must be handled by
+    // Android/telephony emergency routing, not by the normal MMTel service-call
+    // URI policy.
+    @Suppress("DEPRECATION")
+    private fun shortServiceTelUri(normalizedPhoneNumber: String): String? {
+        if (normalizedPhoneNumber.length !in 3..6 ||
+            !normalizedPhoneNumber.all { it.isDigit() }) {
+            return null
+        }
+
+        // Prefer Android's emergency-number database/classifier. Keep a tiny
+        // fallback denylist for common emergency codes in case the framework
+        // helper does not classify a code on a given build/locale.
+        val fallbackEmergencyShortCodes = setOf(
+            "000", // AU and others
+            "08",
+            "110", // DE police and others
+            "112", // EU/common emergency
+            "118",
+            "119",
+            "911", // NANP/common emergency
+            "999", // UK/common emergency
+        )
+
+        if (PhoneNumberUtils.isEmergencyNumber(normalizedPhoneNumber) ||
+            normalizedPhoneNumber in fallbackEmergencyShortCodes) {
+            return null
+        }
+
+        return "tel:$normalizedPhoneNumber"
+    }
     fun build(
         logTag: String,
         phoneNumber: String,
@@ -97,11 +139,14 @@ internal object SipOutgoingInviteRequestBuilder {
         minSeSeconds: Int,
         generatedCallIdHeaders: Map<String, List<String>>,
     ): OutgoingInviteBaseRequestContext {
-        val to = if (normalizedPhoneNumber.startsWith("+")) {
+        val to = shortServiceTelUri(normalizedPhoneNumber)
+            ?: if (normalizedPhoneNumber.startsWith("+")) {
             // Global TEL URIs must stand on their own. Adding phone-context to +E.164
             // numbers makes some IMS cores drop the INVITE without any SIP response.
             "tel:$normalizedPhoneNumber"
         } else {
+            // Short service numbers were handled above. Other local numbers
+            // keep the generic IMS phone-context.
             "tel:$normalizedPhoneNumber;phone-context=ims.mnc$mnc.mcc$mcc.3gppnetwork.org"
         }
         Rlog.d(logTag, "Outgoing dial target raw=$phoneNumber normalized=$normalizedPhoneNumber uri=$to")
