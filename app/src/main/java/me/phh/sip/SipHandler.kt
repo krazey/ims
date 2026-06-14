@@ -3802,6 +3802,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             normalizedPhoneNumber = normalizedPhoneNumber,
             mcc = mcc,
             mnc = mnc,
+            registrationTech = imsRegistrationTech,
             mySip = mySip,
             myTel = myTel,
             imsi = imsi,
