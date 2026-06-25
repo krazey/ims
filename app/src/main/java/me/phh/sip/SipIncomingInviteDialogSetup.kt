@@ -126,14 +126,19 @@ internal object SipIncomingInviteDialogSetup {
         }
         try {
             bindSocket(rtpSocket)
-            rtpSocket.connect(rtpRemoteAddr, rtpRemotePort.toInt())
+            Rlog.d(logTag, "A1HR_INCOMING_RTP_UNCONNECTED_RX_TEST_ONLY: leaving incoming RTP socket unconnected; txTarget=${rtpRemoteAddr}:${rtpRemotePort} local=${rtpSocket.localAddress}:${rtpSocket.localPort}")
         } catch (t: Throwable) {
             Rlog.e(logTag, "Failed to bind/connect incoming RTP socket", t)
             try { rtpSocket.close() } catch (_: Throwable) {}
             reconnectIms("incoming RTP bind/connect failed")
             return null
         }
-        Rlog.d(logTag, "RTP socket created: local=${rtpSocket.localAddress}:${rtpSocket.localPort}, remote=${rtpSocket.inetAddress}:${rtpSocket.port}")
+        Rlog.d(
+            logTag,
+            "RTP socket created: local=${rtpSocket.localAddress}:${rtpSocket.localPort}, " +
+                "connected=${rtpSocket.isConnected}, socketRemote=${rtpSocket.inetAddress}:${rtpSocket.port}, " +
+                "txTarget=${rtpRemoteAddr}:${rtpRemotePort} A1HR_INCOMING_RTP_UNCONNECTED_RX_TEST_ONLY",
+        )
         return rtpSocket
     }
 
