@@ -15,6 +15,7 @@ import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_LTE
 data class SipRegistrationRecoveryPolicy(
     val blockPcscfOnRegistrationFailure: Boolean = true,
     val pcscfBlockMs: Long = 30_000L,
+    val keepFrameworkRegistrationDuringTransientSipReconnect: Boolean = true,
 )
 
 data class SipCarrierPolicy(

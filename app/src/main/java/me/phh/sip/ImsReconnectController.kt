@@ -12,7 +12,8 @@ internal class ImsReconnectController(
     private val currentNetwork: () -> Network?,
     private val setCurrentNetwork: (Network) -> Unit,
     private val reportFailure: () -> Unit,
-    private val dropConnection: (String) -> Unit,
+    private val dropConnection: (String, Boolean) -> Unit,
+    private val shouldKeepRegistrationDuringReconnect: (String, Network?) -> Boolean,
     private val connect: () -> Unit,
 ) {
     private data class PendingReconnectRequest(
@@ -135,8 +136,21 @@ internal class ImsReconnectController(
                     val request = takePendingReconnectRequest() ?: break
 
                     try {
-                        Rlog.w(tag, "Reconnecting IMS: ${request.reason}")
-                        dropConnection(request.reason)
+                        val keepRegistrationDuringReconnect =
+                            shouldKeepRegistrationDuringReconnect(request.reason, request.newNetwork)
+                        Rlog.w(
+                            tag,
+                            "Reconnecting IMS: ${request.reason}" +
+                                if (keepRegistrationDuringReconnect) {
+                                    " while keeping framework IMS registration stable"
+                                } else {
+                                    ""
+                                },
+                        )
+                        dropConnection(
+                            request.reason,
+                            !keepRegistrationDuringReconnect,
+                        )
 
                         if (request.newNetwork != null) {
                             setCurrentNetwork(request.newNetwork)

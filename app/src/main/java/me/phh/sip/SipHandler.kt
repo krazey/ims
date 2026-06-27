@@ -333,7 +333,12 @@ class SipHandler(
         currentNetwork = { if (this::network.isInitialized) network else null },
         setCurrentNetwork = { network = it },
         reportFailure = { imsFailureCallback?.invoke() },
-        dropConnection = { reason -> dropImsConnection(reason) },
+        dropConnection = { reason, notifyFramework ->
+            dropImsConnection(reason, notifyFramework)
+        },
+        shouldKeepRegistrationDuringReconnect = { reason, newNetwork ->
+            shouldKeepFrameworkRegistrationDuringReconnect(reason, newNetwork)
+        },
         connect = { connect() },
     )
 
@@ -893,13 +898,60 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         BoundedCloser.close(TAG, "clientSpiC") { settings.clientSpiC.close() }
         BoundedCloser.close(TAG, "clientSpiS") { settings.clientSpiS.close() }
     }
-    private fun dropImsConnection(reason: String) {
+
+    private fun shouldKeepFrameworkRegistrationDuringReconnect(
+        reason: String,
+        newNetwork: Network?,
+    ): Boolean {
+        if (!carrierSettings.registrationRecoveryPolicy.keepFrameworkRegistrationDuringTransientSipReconnect) {
+            return false
+        }
+        if (!imsReady || !this::network.isInitialized) {
+            return false
+        }
+        if (newNetwork != null && newNetwork != network) {
+            return false
+        }
+
+        val lowerReason = reason.lowercase()
+        if (lowerReason.contains("retry after failed") ||
+            lowerReason.contains("reconnect failed") ||
+            lowerReason.contains("connect/register failed")) {
+            return false
+        }
+        if (!lowerReason.contains("sip socket lost") &&
+            !lowerReason.contains("sip transport lost")) {
+            return false
+        }
+
+        val lp = try {
+            connectivityManager.getLinkProperties(network)
+        } catch (_: Throwable) {
+            null
+        } ?: return false
+
+        if (getImsLocalAddress(lp) == null) {
+            return false
+        }
+
+        Rlog.w(
+            TAG,
+            "Keeping framework IMS registration stable during transient SIP reconnect: " +
+                "$reason network=$network local=${getImsLocalAddress(lp)?.hostAddress} " +
+                "pcscfs=${getPcscfServers(lp).map { it.hostAddress }}",
+        )
+        return true
+    }
+
+    private fun dropImsConnection(reason: String, notifyFramework: Boolean = true) {
         val wasReady = imsReady
         clearCallAndCallbackStateForReconnect()
         resetRegistrationStateForConnect()
-        if (wasReady) {
+        if (wasReady && notifyFramework) {
             Rlog.w(TAG, "Reporting IMS deregistered before reconnect cleanup: $reason")
             imsFailureCallback?.invoke()
+        } else if (wasReady) {
+            Rlog.w(TAG, "Suppressing framework IMS deregistration during transient reconnect cleanup: $reason")
         }
         closeSipTransports(reason)
         closeIpsecResources(reason)
