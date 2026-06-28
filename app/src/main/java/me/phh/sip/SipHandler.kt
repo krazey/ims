@@ -500,6 +500,9 @@ private val smsHandler = SipSmsHandler(
             reason = "stop runtime: $reason",
             previousMode = null,
         )
+        if (reason != "pending waiting INVITE reject") {
+            clearPendingWaitingInvite(reason = "call runtime stopped: $reason")
+        }
         runDeferredImsReconnectAfterCallTerminalState(reason)
     }
 
@@ -840,6 +843,7 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         incomingHangupAfterAck.set(false)
         terminatedIncomingCallIds.clear()
         currentCall = null
+        clearPendingWaitingInvite(reason = "IMS reconnect")
         clearPendingOutgoingInvite(closeRtpSocket = true, reason = "IMS reconnect")
         callGeneration.incrementAndGet()
         prAckWaitTracker.clearAndNotifyAll()
@@ -2841,9 +2845,47 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         return 200
     }
 
+    private fun handlePendingWaitingCancel(request: SipRequest, callId: String): Int? {
+        if (request.method != SipMethod.CANCEL) return null
+        val pending = pendingWaitingInvite ?: return null
+        if (pending.callId != callId) return null
+
+        val toOverride = pending.callHeaders["to"] ?: request.headers["to"]
+        val cancelOk = SipRemoteDialogTermination.cancelOkResponse(
+            request = request,
+            toOverride = toOverride,
+        )
+        Rlog.d(TAG, SipRemoteDialogTermination.cancelOkLog(cancelOk))
+        SipRemoteDialogTermination.writeResponse(
+            responseWriter = pending.responseWriter,
+            response = cancelOk,
+        )
+
+        val inviteTerminated = SipRemoteDialogTermination.cancelledInviteResponse(
+            request = request,
+            toOverride = toOverride,
+        )
+        Rlog.d(TAG, SipRemoteDialogTermination.cancelledInviteLog(inviteTerminated))
+        SipRemoteDialogTermination.writeResponse(
+            responseWriter = pending.responseWriter,
+            response = inviteTerminated,
+        )
+
+        rememberTerminatedIncomingCall(callId, SipRemoteDialogTermination.remoteCancelTerminationReason())
+        clearPendingWaitingInvite(callId, SipRemoteDialogTermination.remoteCancelTerminationReason())
+        onCancelledCall?.invoke(
+            Object(),
+            "",
+            SipRemoteDialogTermination.remoteCancelCancellationExtras(callId),
+        )
+        return 0
+    }
+
     fun handleCancel(request: SipRequest): Int {
         val callId = request.callIdOrEmpty()
         val isBye = request.method == SipMethod.BYE
+
+        handlePendingWaitingCancel(request, callId)?.let { return it }
 
         // RFC 3261 §9.2: CANCEL has no effect if we already sent a final response
         // for the INVITE. Reply 200 OK to the CANCEL transaction, but keep the
@@ -2894,6 +2936,17 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         val incomingResponseWriter: OutputStream? = null,
         val localCseq: AtomicInteger = AtomicInteger(2),
         val localSdpVersion: AtomicInteger = AtomicInteger(2), val outgoingRtpReceived: AtomicBoolean = AtomicBoolean(false), val outgoingConnectedNotified: AtomicBoolean = AtomicBoolean(false), )
+
+    private data class PendingWaitingInvite(
+        val callId: String,
+        val callHeaders: SipHeadersMap,
+        val responseWriter: OutputStream,
+        val ringingResponseBytes: ByteArray,
+        val callerNumber: String,
+        val incomingOffer: IncomingInviteOffer?,
+        val setupState: IncomingInviteDialogSetupState?,
+        val createdAtElapsedMs: Long,
+    )
 
     // illegal SDP conservative retry: retry once only when the SBC explicitly rejects the SDP body.
 
@@ -3256,6 +3309,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
     var currentCall: Call? = null
     private var pendingOutgoingInvite: PendingOutgoingInvite? = null
+    private var pendingWaitingInvite: PendingWaitingInvite? = null
     private fun logDuplicateOutgoingConnectedOnce(callId: String, reason: String) {
         val key = "${callId.ifBlank { "<blank>" }}|$reason"
         if (!outgoingConnectedDuplicateLogKeys.add(key)) return
@@ -3657,6 +3711,12 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
     fun rejectCall(callId: String? = null) {
         thread {
+            val waiting = pendingWaitingInvite
+            if (waiting != null && callId == waiting.callId) {
+                rejectPendingWaitingInvite(waiting, "local waiting-call reject")
+                return@thread
+            }
+
             val call = currentCall
             if (call == null || call.outgoing) {
                 Rlog.w(TAG, SipIncomingInviteFinalResponses.rejectWithoutValidIncomingCallLog(call))
@@ -3787,6 +3847,12 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
     fun terminateCall(callId: String? = null) {
         val call = currentCall
         val pendingOutgoing = pendingOutgoingInvite
+        val waiting = pendingWaitingInvite
+
+        if (waiting != null && callId == waiting.callId) {
+            rejectPendingWaitingInvite(waiting, "local waiting-call terminate")
+            return
+        }
 
         if (call == null) {
             if (pendingOutgoing != null) {
@@ -5487,9 +5553,278 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
     }
 
 
+
+    private fun clearPendingWaitingInvite(
+        callId: String? = null,
+        reason: String,
+        closeRtpSocket: Boolean = true,
+    ) {
+        val pending = pendingWaitingInvite ?: return
+        if (callId != null && pending.callId != callId) return
+
+        Rlog.d(
+            TAG,
+            "Clearing pending waiting INVITE: callId=${pending.callId} reason=$reason " +
+                "closeRtpSocket=$closeRtpSocket hasPreparedMedia=${pending.setupState != null}",
+        )
+        pendingWaitingInvite = null
+        if (closeRtpSocket) {
+            try { pending.setupState?.rtpSocket?.close() } catch (t: Throwable) {
+                Rlog.d(TAG, "Failed to close pending waiting RTP socket: callId=${pending.callId}", t)
+            }
+        }
+    }
+
+
+    private fun pendingWaitingDialogUserPart(): String {
+        val sipUserPart = mySip
+            .removePrefix("sip:")
+            .substringBefore('@')
+            .trim('<', '>', ' ')
+        return sipUserPart.ifBlank { myTel.ifBlank { "phh" } }
+    }
+
+
+    private fun pendingWaitingInviteHeaders(
+        request: SipRequest,
+        incomingCallId: String,
+    ): SipHeadersMap {
+        val local = SipIncomingInviteDialogSetup.localDialogEndpoint(
+            localHost = socket.gLocalAddr().hostAddress,
+            isIpv6 = socket.gLocalAddr() is Inet6Address,
+            port = serverSocket.localPort,
+        )
+        val dialogContact = SipIncomingInviteDialogSetup.buildDialogContact(
+            logTag = TAG,
+            request = request,
+            owner = pendingWaitingDialogUserPart(),
+            incomingCallId = incomingCallId,
+            localEndpoint = local,
+            fallbackTransport = SipContactHeaders.transport(socket),
+            imei = imei,
+        )
+        val toWithTag = SipIncomingInviteToHeaderTagger.tag(
+            request = request,
+            localToTag = randomBytes(6).toHex(),
+            logTag = TAG,
+        )
+
+        return commonHeaders +
+            """
+            Contact: $dialogContact
+            Allow: INVITE, ACK, CANCEL, BYE, UPDATE, REFER, NOTIFY, INFO, MESSAGE, PRACK, OPTIONS
+            Supported: replaces, timer
+            Content-Length: 0
+            """.toSipHeadersMap() +
+            request.headers.filter { (k, _) ->
+                k in listOf("cseq", "via", "from", "to", "call-id", "record-route")
+            } +
+            mapOf("to" to toWithTag) -
+            "route" - "security-verify" - "content-type" - "p-access-network-info"
+    }
+
+
+    private fun handleDuplicatePendingWaitingInvite(
+        incomingCallId: String,
+        incomingResponseWriter: OutputStream,
+    ): Int? {
+        val pending = pendingWaitingInvite ?: return null
+        if (pending.callId != incomingCallId) return null
+
+        Rlog.w(TAG, "Re-sending 180 Ringing for duplicate pending waiting INVITE: callId=$incomingCallId")
+        writeSipBytesWithFlush(
+            incomingResponseWriter,
+            "duplicate call-waiting 180 Ringing callId=$incomingCallId",
+            pending.ringingResponseBytes,
+        )
+        return 0
+    }
+
+
+    private fun pendingWaitingInviteSdpRequest(
+        request: SipRequest,
+        incomingCallId: String,
+    ): SipRequest? {
+        val contentType = request.headers["content-type"]?.getOrNull(0)
+
+        if (SipMultipartBody.isContentType(contentType, "application/sdp")) {
+            return request
+        }
+
+        val sdpBody = SipMultipartBody.extractPartBody(
+            contentType = contentType,
+            body = request.body,
+            expectedPartContentType = "application/sdp",
+        ) ?: run {
+            Rlog.w(
+                TAG,
+                "Pending waiting INVITE has no parseable SDP offer yet; " +
+                    "accept will stay guarded: callId=$incomingCallId " +
+                    "contentType=${contentType.orEmpty()} " +
+                    "isMultipart=${SipMultipartBody.isMultipart(contentType)} " +
+                    "bodyHasSdpPart=${SipMultipartBody.bodyContainsContentType(request.body, "application/sdp")} " +
+                    "bodyBytes=${request.body.size}",
+            )
+            return null
+        }
+
+        Rlog.w(
+            TAG,
+            "Extracted SDP from multipart waiting INVITE: " +
+                "callId=$incomingCallId contentType=${contentType.orEmpty()} " +
+                "isMultipart=${SipMultipartBody.isMultipart(contentType)} " +
+                "sdpBytes=${sdpBody.size}",
+        )
+
+        return SipRequest(
+            request.method,
+            request.destination,
+            request.headers - "content-length" +
+                mapOf("content-type" to listOf("application/sdp")),
+            sdpBody,
+            false,
+        )
+    }
+    private fun preparePendingWaitingInviteMedia(
+        request: SipRequest,
+        incomingCallId: String,
+    ): Pair<IncomingInviteOffer, IncomingInviteDialogSetupState>? {
+        val offerRequest = pendingWaitingInviteSdpRequest(
+            request = request,
+            incomingCallId = incomingCallId,
+        ) ?: return null
+
+        val waitingOffer = parseIncomingInviteOffer(
+            request = offerRequest,
+            incomingCallId = incomingCallId,
+        ) ?: run {
+            Rlog.w(TAG, "Failed to parse pending waiting INVITE SDP offer: callId=$incomingCallId")
+            return null
+        }
+
+        val setupState = prepareIncomingInviteDialogSetupState(
+            request = request,
+            incomingCallId = incomingCallId,
+            incomingOffer = waitingOffer,
+        ) ?: run {
+            Rlog.w(TAG, "Failed to prepare pending waiting INVITE media: callId=$incomingCallId")
+            return null
+        }
+
+        Rlog.w(
+            TAG,
+            "Prepared pending waiting INVITE media: callId=$incomingCallId " +
+                "codec=${waitingOffer.selectedAudioCodec.name}/${waitingOffer.selectedAudioCodec.sampleRate} " +
+                "localRtp=${setupState.rtpSocket.localAddress}:${setupState.rtpSocket.localPort} " +
+                "remoteRtp=${waitingOffer.rtpRemoteAddr}:${waitingOffer.rtpRemotePort} " +
+                "sendReliable183=${waitingOffer.sendReliable183}",
+        )
+
+        return waitingOffer to setupState
+    }
+    private fun exposeCarrierCallWaitingInvite(
+        request: SipRequest,
+        incomingCallId: String,
+        incomingResponseWriter: OutputStream,
+        callWaitingInfo: SipCallWaitingInviteInfo,
+    ): Int? {
+        if (!callWaitingInfo.looksLikeCarrierCallWaiting) return null
+
+
+        val existingWaiting = pendingWaitingInvite
+        if (existingWaiting != null && existingWaiting.callId != incomingCallId) {
+            Rlog.w(
+                TAG,
+                "Already have pending waiting INVITE; rejecting new waiting candidate as busy: " +
+                    "existing=${existingWaiting.callId} new=$incomingCallId",
+            )
+            return null
+        }
+
+        sendExplicitTryingForIncomingInvite(
+            request = request,
+            incomingResponseWriter = incomingResponseWriter,
+        )
+
+        val preparedWaitingMedia = preparePendingWaitingInviteMedia(
+            request = request,
+            incomingCallId = incomingCallId,
+        )
+        val waitingOffer = preparedWaitingMedia?.first
+        val waitingSetupState = preparedWaitingMedia?.second
+        val waitingHeaders = waitingSetupState?.headers ?: pendingWaitingInviteHeaders(
+            request = request,
+            incomingCallId = incomingCallId,
+        )
+        val ringingResponse = SipIncomingInviteDialogSetup.plainRingingResponse(waitingHeaders)
+        val ringingBytes = ringingResponse.toByteArray()
+        val callerNumber = waitingOffer?.callerNumber
+            ?: extractCallerNumberFromHeader(request.headers["from"]?.getOrNull(0).orEmpty()).trim()
+        val waitingCodec = waitingOffer?.selectedAudioCodec ?: SipAudioCodecs.AMR_NB
+
+        pendingWaitingInvite = PendingWaitingInvite(
+            callId = incomingCallId,
+            callHeaders = waitingHeaders,
+            responseWriter = incomingResponseWriter,
+            ringingResponseBytes = ringingBytes,
+            callerNumber = callerNumber,
+            incomingOffer = waitingOffer,
+            setupState = waitingSetupState,
+            createdAtElapsedMs = SystemClock.elapsedRealtime(),
+        )
+
+        Rlog.w(
+            TAG,
+            "Exposing carrier call-waiting INVITE as pending incoming session: " +
+                callWaitingInfo.logSummary(),
+        )
+        writeSipBytesWithFlush(
+            incomingResponseWriter,
+            "call-waiting 180 Ringing callId=$incomingCallId",
+            ringingBytes,
+        )
+        onIncomingCall?.invoke(
+            Object(),
+            callerNumber,
+            mapOf(
+                "call-id" to incomingCallId,
+                "call-waiting" to "true",
+                "call-waiting-media-prepared" to (waitingSetupState != null).toString(),
+            ) + SipAudioCodecNegotiator.audioCodecExtras(waitingCodec),
+        )
+
+        return 0
+    }
+
+
+    private fun rejectPendingWaitingInvite(
+        pending: PendingWaitingInvite,
+        reason: String,
+    ) {
+        rememberTerminatedIncomingCall(
+            pending.callId,
+            SipIncomingInviteFinalResponses.localRejectTerminationReason(),
+        )
+        val response = SipIncomingInviteFinalResponses.localRejectResponse(pending.callHeaders)
+        Rlog.w(TAG, "Rejecting pending waiting INVITE: callId=${pending.callId} reason=$reason response=$response")
+        writeSipBytesWithFlush(
+            pending.responseWriter,
+            "pending waiting INVITE reject callId=${pending.callId}",
+            response.toByteArray(),
+        )
+        clearPendingWaitingInvite(pending.callId, reason)
+        onCancelledCall?.invoke(
+            Object(),
+            "",
+            SipIncomingInviteFinalResponses.localRejectCancellationExtras(pending.callId),
+        )
+    }
+
+
     private fun rejectIncomingInviteWhileBusyOrOutgoingPending(
         request: SipRequest,
         incomingCallId: String,
+        incomingResponseWriter: OutputStream,
         existingCall: Call?,
     ): Int? {
         val activeCallId = existingCall?.callHeaders?.get("call-id")?.getOrNull(0)
@@ -5505,9 +5840,15 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         if (callWaitingInfo.looksLikeCarrierCallWaiting) {
             Rlog.w(
                 TAG,
-                "Detected carrier call-waiting INVITE; current fallback will reject it as busy: " +
+                "Detected carrier call-waiting INVITE: " +
                     callWaitingInfo.logSummary(),
             )
+            exposeCarrierCallWaitingInvite(
+                request = request,
+                incomingCallId = incomingCallId,
+                incomingResponseWriter = incomingResponseWriter,
+                callWaitingInfo = callWaitingInfo,
+            )?.let { return it }
         } else if (callWaitingInfo.isInviteWhileBusy) {
             Rlog.w(
                 TAG,
@@ -5838,10 +6179,15 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             incomingResponseWriter = incomingResponseWriter,
             existingCall = existingCall,
         )?.let { return it }
+        handleDuplicatePendingWaitingInvite(
+            incomingCallId = incomingCallId,
+            incomingResponseWriter = incomingResponseWriter,
+        )?.let { return it }
 
         rejectIncomingInviteWhileBusyOrOutgoingPending(
             request = request,
             incomingCallId = incomingCallId,
+            incomingResponseWriter = incomingResponseWriter,
             existingCall = existingCall,
         )?.let { return it }
 

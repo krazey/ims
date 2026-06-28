@@ -814,6 +814,7 @@ sipHandler.imsFailureCallback = {
             audioQualityFromSipExtras(extras),
         )
             val incomingCallId = extras["call-id"]!!
+            val isCallWaitingSession = extras["call-waiting"] == "true"
             val incomingSession = object: ImsCallSessionImplBase() {
                 var mState = State.IDLE
                 private var sessionListener: ImsCallSessionListener? = null
@@ -850,7 +851,15 @@ sipHandler.imsFailureCallback = {
                 }
 
                 override fun accept(callType: Int, profile: ImsStreamMediaProfile) {
-                    Rlog.d(TAG, "Accepting call with profile $profile")
+                    if (isCallWaitingSession) {
+                        Rlog.w(
+                            TAG,
+                            "Accepting call-waiting session: " +
+                                "callId=$incomingCallId profile=$profile",
+                        )
+                    } else {
+                        Rlog.d(TAG, "Accepting call with profile $profile")
+                    }
                     sipHandler.acceptCall(incomingCallId)
                     mState = State.ESTABLISHED
                     sessionListener?.callSessionInitiated(callProfile)
@@ -861,8 +870,11 @@ sipHandler.imsFailureCallback = {
                 }
 
                 override fun reject(reason: Int) {
+                    // Keep the listener registered until the SIP final response path
+                    // calls onCancelledCall() with this Call-ID. Removing it here can
+                    // make the cancellation callback terminate the foreground outgoing
+                    // call instead of the waiting call.
                     sipHandler.rejectCall(incomingCallId)
-                    forgetIncomingCallListener(incomingCallId)
                     Rlog.d(TAG, "Rejecting call $reason")
                 }
 
@@ -885,6 +897,12 @@ sipHandler.imsFailureCallback = {
                     Rlog.d(TAG, "Terminating call")
                     sipHandler.myHandler.post {
                         sipHandler.terminateCall(incomingCallId)
+                        if (isCallWaitingSession) {
+                            // Waiting calls are terminated through the Call-ID routed
+                            // onCancelledCall() path, so the active foreground session
+                            // stays untouched.
+                            return@post
+                        }
                         forgetIncomingCallListener(incomingCallId)
                         sessionListener?.callSessionTerminated(ImsReasonInfo(ImsReasonInfo.CODE_USER_TERMINATED, 0, "Kikoo"))
                     }
@@ -906,6 +924,12 @@ sipHandler.imsFailureCallback = {
         if (incomingListener != null) {
             Rlog.d(TAG, "Routing incoming call cancellation to callId=$cancelledCallId")
             incomingListener.callSessionTerminated(reasonInfo)
+        } else if (cancelledCallId != null) {
+            Rlog.w(
+                TAG,
+                "No incoming IMS call listener for cancellation callId=$cancelledCallId; " +
+                    "not falling back to foreground outgoing call. reason=$reason map=$map",
+            )
         } else if (outgoingCallActive) {
             outgoingCallListener?.callSessionTerminated(reasonInfo)
             outgoingCallActive = false
