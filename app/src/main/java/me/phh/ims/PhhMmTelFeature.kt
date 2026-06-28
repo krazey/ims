@@ -580,6 +580,7 @@ class PhhMmTelFeature(
             }
 
             outgoingCallActive = true
+            outgoingCallSipCallId = null
             sipHandler.call(callee)
         }
 
@@ -597,6 +598,76 @@ class PhhMmTelFeature(
                 Rlog.d(TAG, "Rejecting call with reason $reason")
             }
 
+            override fun hold(profile: ImsStreamMediaProfile) {
+                fun reportFrameworkHeld(reason: String) {
+                    val heldProfile = currentCallProfile
+                    heldProfile.mMediaProfile.mAudioDirection =
+                        android.telephony.ims.ImsStreamMediaProfile.DIRECTION_INACTIVE
+                    currentCallProfile = heldProfile
+                    if (this::mListener.isInitialized) {
+                        Rlog.w(TAG, "$reason; reporting callSessionHeld()")
+                        mListener.callSessionHeld(heldProfile)
+                    } else {
+                        Rlog.w(TAG, "No outgoing call listener while reporting held state: $reason")
+                    }
+                }
+
+                Rlog.w(
+                    TAG,
+                    "Requesting SIP hold for call-waiting foreground call: " +
+                        "callId=$outgoingCallSipCallId profile=$profile",
+                )
+                sipHandler.holdForegroundCallForWaiting(outgoingCallSipCallId) { success ->
+                    if (success) {
+                        reportFrameworkHeld("SIP hold accepted for call waiting")
+                    } else {
+                        Rlog.w(TAG, "SIP hold failed for callId=$outgoingCallSipCallId")
+                        if (this::mListener.isInitialized) {
+                            mListener.callSessionHoldFailed(
+                                ImsReasonInfo(
+                                    ImsReasonInfo.CODE_NETWORK_REJECT,
+                                    0,
+                                    "SIP hold failed",
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+
+            override fun resume(profile: ImsStreamMediaProfile) {
+                Rlog.w(
+                    TAG,
+                    "Requesting SIP resume for held call-waiting foreground call: " +
+                        "callId=$outgoingCallSipCallId profile=$profile",
+                )
+                sipHandler.resumeHeldForegroundCallForWaiting(outgoingCallSipCallId) { success ->
+                    if (success) {
+                        val resumedProfile = currentCallProfile
+                        resumedProfile.mMediaProfile.mAudioDirection =
+                            android.telephony.ims.ImsStreamMediaProfile.DIRECTION_SEND_RECEIVE
+                        currentCallProfile = resumedProfile
+                        if (this::mListener.isInitialized) {
+                            Rlog.w(TAG, "SIP resume accepted for held call; reporting callSessionResumed()")
+                            mListener.callSessionResumed(resumedProfile)
+                        } else {
+                            Rlog.w(TAG, "No outgoing call listener while reporting resumed state")
+                        }
+                    } else {
+                        Rlog.w(TAG, "SIP resume failed for held callId=$outgoingCallSipCallId")
+                        if (this::mListener.isInitialized) {
+                            mListener.callSessionResumeFailed(
+                                ImsReasonInfo(
+                                    ImsReasonInfo.CODE_NETWORK_REJECT,
+                                    0,
+                                    "SIP resume failed",
+                                ),
+                            )
+                        }
+                    }
+                }
+            }
+
             override fun sendDtmf(c: Char, result: Message?) {
                 Rlog.d(TAG, "Sending outgoing DTMF $c")
                 sipHandler.sendDtmf(c)
@@ -612,17 +683,13 @@ class PhhMmTelFeature(
             override fun terminate(reason: Int) {
                 Rlog.d(TAG, "Terminating call with reason $reason")
                 sipHandler.myHandler.post {
-                    sipHandler.terminateCall()
-                    mListener.callSessionTerminated(ImsReasonInfo(ImsReasonInfo.CODE_USER_TERMINATED, 0, "Kikoo"))
-                    outgoingCallActive = false
-                    if (outgoingCallListener == mListener) {
-                        outgoingCallListener = null
-                    }
+                    sipHandler.terminateCall(outgoingCallSipCallId)
                 }
             }
         }.also { session ->
             sipHandler.onOutgoingCallConnected = { _: Object, extras: Map<String, String> ->
                 Rlog.d(TAG, "Outgoing call connected")
+                extras["call-id"]?.let { outgoingCallSipCallId = it }
                 session.mState = ImsCallSessionImplBase.State.ESTABLISHED
                 val callProfile = makeVoiceCallProfile(
                     audioQuality = audioQualityFromSipExtras(extras),
@@ -633,6 +700,7 @@ class PhhMmTelFeature(
 
             sipHandler.onOutgoingCallProgressing = { _: Object, extras: Map<String, String> ->
                 Rlog.d(TAG, "Outgoing call progressing: $extras")
+                extras["call-id"]?.let { outgoingCallSipCallId = it }
                 val callProfile = makeVoiceCallProfile()
                 callProfile.mMediaProfile.mAudioDirection =
                     android.telephony.ims.ImsStreamMediaProfile.DIRECTION_INACTIVE
