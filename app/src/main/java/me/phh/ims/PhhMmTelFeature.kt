@@ -617,7 +617,10 @@ class PhhMmTelFeature(
                     "Requesting SIP hold for call-waiting foreground call: " +
                         "callId=$outgoingCallSipCallId profile=$profile",
                 )
-                sipHandler.holdForegroundCallForWaiting(outgoingCallSipCallId) { success ->
+                sipHandler.holdForegroundCallForWaiting(
+                    callId = outgoingCallSipCallId,
+                    moveToPendingSwapSlot = true,
+                ) { success ->
                     if (success) {
                         reportFrameworkHeld("SIP hold accepted for call waiting")
                     } else {
@@ -944,7 +947,10 @@ sipHandler.imsFailureCallback = {
                         "Incoming call hold requested for call-waiting swap: " +
                             "callId=$incomingCallId profile=$profile",
                     )
-                    sipHandler.holdForegroundCallForWaiting(incomingCallId) { success ->
+                    sipHandler.holdForegroundCallForWaiting(
+                        callId = incomingCallId,
+                        moveToPendingSwapSlot = true,
+                    ) { success ->
                         if (success) {
                             callProfile.mMediaProfile.mAudioDirection =
                                 android.telephony.ims.ImsStreamMediaProfile.DIRECTION_INACTIVE

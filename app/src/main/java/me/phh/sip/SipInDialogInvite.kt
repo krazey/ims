@@ -75,17 +75,21 @@ internal object SipInDialogInvite {
     fun selectMedia(
         attributes: List<String>,
         selectedAudioCodec: NegotiatedAudioCodec,
+        preferredAmrTrack: Int? = null,
+        preferredDtmfTrack: Int? = null,
         logTag: String,
     ): InDialogInviteMediaSelection? {
         val (amrTrack, amrTrackDesc) = trackMatching(
             attributes = attributes,
             codec = SipAudioCodecNegotiator.speechCodecRtpmapName(selectedAudioCodec),
+            preferredTrack = preferredAmrTrack,
             notAdditional = "octet-align=1",
             logTag = logTag,
         ) ?: return null
         val (dtmfTrack, dtmfTrackDesc) = trackMatching(
             attributes = attributes,
             codec = SipAudioCodecNegotiator.telephoneEventRtpmapName(selectedAudioCodec),
+            preferredTrack = preferredDtmfTrack,
             logTag = logTag,
         ) ?: return null
         val amrFmtpAnswer =
@@ -105,6 +109,7 @@ internal object SipInDialogInvite {
     fun trackMatching(
         attributes: List<String>,
         codec: String,
+        preferredTrack: Int? = null,
         notAdditional: String = "",
         logTag: String,
     ): Pair<Int, String>? {
@@ -113,6 +118,26 @@ internal object SipInDialogInvite {
             val track = m.split("[: ]+".toRegex())[1].toInt()
             Pair(track, m)
         }
+
+        if (preferredTrack != null) {
+            val preferredMatch = matches.firstOrNull { it.first == preferredTrack }
+            if (preferredMatch != null) {
+                Rlog.d(
+                    logTag,
+                    "In-dialog INVITE reusing negotiated $codec payload " +
+                        "track=$preferredTrack match=$preferredMatch",
+                )
+                return preferredMatch
+            }
+
+            Rlog.w(
+                logTag,
+                "In-dialog INVITE did not offer negotiated $codec payload " +
+                    "track=$preferredTrack matches=$matches; rejecting renegotiation",
+            )
+            return null
+        }
+
         val sorted = if (matches.size > 1) {
             matches.sortedBy { m ->
                 val fmtp = attributes.firstOrNull { it.startsWith("fmtp:${m.first}") }.orEmpty()
@@ -172,6 +197,33 @@ internal object SipInDialogInvite {
             ?.let { extractDestinationFromContact(it) }
             ?: fallbackRemoteContact
 
+    private fun bandwidthType(line: String): String =
+        line.substringBefore(':').trim()
+
+    private fun isSupportedBandwidthLine(line: String): Boolean {
+        val type = bandwidthType(line)
+        return type.equals("AS", ignoreCase = true) ||
+            type.equals("RS", ignoreCase = true) ||
+            type.equals("RR", ignoreCase = true)
+    }
+
+    private fun deduplicateBandwidthLines(lines: List<String>): List<String> {
+        val seenTypes = mutableSetOf<String>()
+        val result = mutableListOf<String>()
+
+        for (line in lines) {
+            val trimmedLine = line.trim()
+            val type = bandwidthType(trimmedLine)
+            if (type.isEmpty()) continue
+
+            if (seenTypes.add(type.uppercase())) {
+                result += trimmedLine
+            }
+        }
+
+        return result
+    }
+
     fun buildAnswerSdp(
         attributes: List<String>,
         sdp: List<String>,
@@ -191,14 +243,48 @@ internal object SipInDialogInvite {
         val remoteMaxptime = attributes.firstOrNull { it.startsWith("maxptime:") } ?: "maxptime:20"
         val allTracks = listOf(amrTrack, dtmfTrack)
         val sdpBandwidthAs = SipAudioCodecNegotiator.sdpBandwidthAsKbps(selectedAudioCodec)
-        val remoteBandwidthLines = sdp
-            .filter { it.startsWith("b=", ignoreCase = true) }
-            .map { it.substring(2).trim() }
-            .filter { it.startsWith("AS:", ignoreCase = true) }
-        val answerBandwidthLines = if (remoteBandwidthLines.isNotEmpty()) {
-            remoteBandwidthLines
+
+        fun bandwidthLines(lines: List<String>): List<String> {
+            val seenTypes = mutableSetOf<String>()
+            return lines
+                .filter { it.startsWith("b=", ignoreCase = true) }
+                .map { it.substring(2).trim() }
+                .filter { it.isNotEmpty() }
+                .filter { bandwidthLine ->
+                    val type = bandwidthLine.substringBefore(':').trim().uppercase()
+                    type.isNotEmpty() && seenTypes.add(type)
+                }
+        }
+
+        val firstAudioMediaIndex = sdp.indexOfFirst {
+            it.startsWith("m=audio", ignoreCase = true)
+        }
+        val nextMediaIndex = if (firstAudioMediaIndex >= 0) {
+            val nextRelativeIndex = sdp
+                .drop(firstAudioMediaIndex + 1)
+                .indexOfFirst { it.startsWith("m=", ignoreCase = true) }
+
+            if (nextRelativeIndex >= 0) {
+                firstAudioMediaIndex + 1 + nextRelativeIndex
+            } else {
+                sdp.size
+            }
         } else {
-            listOf("AS:$sdpBandwidthAs")
+            sdp.size
+        }
+
+        val sessionBandwidthLines = bandwidthLines(
+            sdp.take(if (firstAudioMediaIndex >= 0) firstAudioMediaIndex else sdp.size)
+        )
+        val mediaBandwidthLines = if (firstAudioMediaIndex >= 0) {
+            bandwidthLines(sdp.subList(firstAudioMediaIndex + 1, nextMediaIndex))
+        } else {
+            emptyList()
+        }
+        val answerBandwidthLines = when {
+            mediaBandwidthLines.isNotEmpty() -> mediaBandwidthLines
+            sessionBandwidthLines.isNotEmpty() -> sessionBandwidthLines
+            else -> listOf("AS:$sdpBandwidthAs")
         }
         val remoteDirection = attributes.firstOrNull {
             it == "sendrecv" || it == "sendonly" || it == "recvonly" || it == "inactive"
