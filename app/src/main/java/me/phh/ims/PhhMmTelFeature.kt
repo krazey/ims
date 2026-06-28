@@ -671,6 +671,25 @@ class PhhMmTelFeature(
                 }
             }
 
+            override fun merge() {
+                Rlog.w(
+                    TAG,
+                    "Outgoing call merge/conference requested, but SIP conferencing is not implemented; " +
+                        "reporting merge failure to clear Telecom merge state: callId=$outgoingCallSipCallId",
+                )
+                if (this::mListener.isInitialized) {
+                    mListener.callSessionMergeFailed(
+                        ImsReasonInfo(
+                            ImsReasonInfo.CODE_NETWORK_REJECT,
+                            0,
+                            "IMS conference merge not implemented",
+                        ),
+                    )
+                } else {
+                    Rlog.w(TAG, "No outgoing call listener while reporting merge failure")
+                }
+            }
+
             override fun sendDtmf(c: Char, result: Message?) {
                 Rlog.d(TAG, "Sending outgoing DTMF $c")
                 sipHandler.sendDtmf(c)
@@ -999,6 +1018,22 @@ sipHandler.imsFailureCallback = {
                         }
                     }
                 }
+
+                override fun merge() {
+                    Rlog.w(
+                        TAG,
+                        "Incoming call merge/conference requested, but SIP conferencing is not implemented; " +
+                            "reporting merge failure to clear Telecom merge state: callId=$incomingCallId",
+                    )
+                    sessionListener?.callSessionMergeFailed(
+                        ImsReasonInfo(
+                            ImsReasonInfo.CODE_NETWORK_REJECT,
+                            0,
+                            "IMS conference merge not implemented",
+                        ),
+                    )
+                }
+
 
                 override fun reject(reason: Int) {
                     // Keep the listener registered until the SIP final response path
