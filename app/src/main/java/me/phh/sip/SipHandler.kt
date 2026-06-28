@@ -849,6 +849,7 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         incomingHangupAfterAck.set(false)
         terminatedIncomingCallIds.clear()
         currentCall = null
+        pendingSwapHeldActiveCall = null
         clearHeldForegroundCall(reason = "IMS reconnect")
         clearPendingWaitingInvite(reason = "IMS reconnect")
         clearPendingOutgoingInvite(closeRtpSocket = true, reason = "IMS reconnect")
@@ -3398,6 +3399,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
     var currentCall: Call? = null
     private var heldForegroundCall: Call? = null
+    private var pendingSwapHeldActiveCall: Call? = null
     private var pendingOutgoingInvite: PendingOutgoingInvite? = null
     private var pendingWaitingInvite: PendingWaitingInvite? = null
     private fun logDuplicateOutgoingConnectedOnce(callId: String, reason: String) {
@@ -5445,7 +5447,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
     private val prAckWaitTracker = PrackWaitTracker()
 
 
-    private fun updateCurrentCallFromInDialogInviteSdp(
+    private fun updateDialogCallFromInDialogInviteSdp(
         call: Call,
         request: SipRequest,
         answerSdp: ByteArray,
@@ -5478,7 +5480,30 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             rtpRemotePort = updateState.rtpRemotePort,
             remoteContact = updateState.remoteContact,
         )
-        currentCall = updatedCall
+        val updatedCallId = updatedCall.callIdOrEmpty()
+        when {
+            currentCall?.callIdOrEmpty() == updatedCallId -> {
+                currentCall = updatedCall
+                Rlog.d(TAG, "Updated current dialog from in-dialog INVITE SDP: callId=$updatedCallId")
+            }
+            pendingSwapHeldActiveCall?.callIdOrEmpty() == updatedCallId -> {
+                pendingSwapHeldActiveCall = updatedCall
+                Rlog.d(TAG, "Updated pending swap held dialog from in-dialog INVITE SDP: callId=$updatedCallId")
+            }
+            heldForegroundCall?.callIdOrEmpty() == updatedCallId -> {
+                heldForegroundCall = updatedCall
+                Rlog.d(TAG, "Updated held foreground dialog from in-dialog INVITE SDP: callId=$updatedCallId")
+            }
+            else -> {
+                Rlog.w(
+                    TAG,
+                    "In-dialog INVITE SDP update had no matching dialog slot; leaving call slots unchanged: " +
+                        "callId=$updatedCallId current=${currentCall?.callIdOrEmpty()} " +
+                        "pendingSwap=${pendingSwapHeldActiveCall?.callIdOrEmpty()} " +
+                        "held=${heldForegroundCall?.callIdOrEmpty()}",
+                )
+            }
+        }
         return updatedCall
     }
 
@@ -5526,7 +5551,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         )
 
 
-        updateCurrentCallFromInDialogInviteSdp(
+        updateDialogCallFromInDialogInviteSdp(
             call = call,
             request = request,
             answerSdp = answerSdp,
@@ -6118,7 +6143,11 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
     }
 
 
-    fun holdForegroundCallForWaiting(callId: String? = null, onComplete: (Boolean) -> Unit) {
+    fun holdForegroundCallForWaiting(
+        callId: String? = null,
+        moveToPendingSwapSlot: Boolean = false,
+        onComplete: (Boolean) -> Unit,
+    ) {
         thread {
             val call = currentCall
             if (call == null) {
@@ -6135,7 +6164,34 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                 onComplete(false)
                 return@thread
             }
-            if (!sendHoldReinviteForCall(call, onComplete)) {
+
+            val shouldMoveToPendingSwapSlot =
+                moveToPendingSwapSlot && heldForegroundCall != null && pendingWaitingInvite == null
+
+            if (!sendHoldReinviteForCall(call) { success ->
+                    if (success && shouldMoveToPendingSwapSlot) {
+                        if (currentCall?.callIdOrEmpty() == currentCallId) {
+                            currentCall = null
+                            pendingSwapHeldActiveCall = call
+                            callStopped.set(true)
+                            callStarted.set(false)
+                            threadsStarted.set(false)
+                            Rlog.w(
+                                TAG,
+                                "Moved active call to pending swap held slot after SIP hold accepted: " +
+                                    "callId=$currentCallId heldCallId=${heldForegroundCall?.callIdOrEmpty()}",
+                            )
+                        } else {
+                            Rlog.w(
+                                TAG,
+                                "Active call changed before pending swap hold could be stored: " +
+                                    "heldCallId=${heldForegroundCall?.callIdOrEmpty()} " +
+                                    "expectedActive=$currentCallId current=${currentCall?.callIdOrEmpty()}",
+                            )
+                        }
+                    }
+                    onComplete(success)
+                }) {
                 onComplete(false)
             }
         }
@@ -6201,6 +6257,122 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         } else {
             Rlog.w(TAG, "Resume media start skipped; threads already running for callId=$callId")
         }
+    }
+
+
+    private fun startResumedCurrentForegroundMedia(call: Call, reason: String) {
+        val callId = call.callIdOrEmpty()
+        val generation = callGeneration.incrementAndGet()
+        currentCall = call
+        callStopped.set(false)
+        callStarted.set(true)
+        threadsStarted.set(false)
+
+        Rlog.w(
+            TAG,
+            "Resumed current foreground call media state: " +
+                "callId=$callId reason=$reason codec=${call.audioCodec.name}/${call.audioCodec.sampleRate} " +
+                "remoteRtp=${call.rtpRemoteAddr}:${call.rtpRemotePort} generation=$generation",
+        )
+        if (threadsStarted.compareAndSet(false, true)) {
+            Rlog.w(TAG, "Media threads were stopped while resuming current foreground call; starting them: callId=$callId")
+            callDecodeThread()
+            callEncodeThread(callSnapshot = call)
+        } else {
+            Rlog.d(TAG, "Media threads already running while resuming current foreground call: callId=$callId")
+        }
+    }
+
+
+    private fun sendResumeReinviteForCurrentForegroundCall(call: Call, onComplete: (Boolean) -> Unit): Boolean {
+        val callId = call.callIdOrEmpty()
+        val resumeSdp = buildCallWaitingHoldSdp(call, holdDirection = "sendrecv")
+        val headers = localDialogHeadersForRequest(call, SipMethod.INVITE) -
+            "content-length" +
+            mapOf("content-type" to listOf("application/sdp"))
+        val inviteCseq = headers["cseq"]?.getOrNull(0)
+            ?.substringBefore(' ')
+            ?.toIntOrNull()
+            ?: run {
+                Rlog.w(TAG, "Cannot send current foreground resume re-INVITE without numeric CSeq: callId=$callId")
+                return false
+            }
+        val resumeInvite = SipRequest(
+            SipMethod.INVITE,
+            call.remoteContact,
+            headers,
+            resumeSdp,
+        )
+
+        setResponseCallback(callId) { response ->
+            val cseq = response.headers["cseq"]?.getOrNull(0).orEmpty()
+            if (!cseq.contains("INVITE", ignoreCase = true)) {
+                Rlog.d(
+                    TAG,
+                    "Ignoring non-INVITE response while waiting for current foreground resume re-INVITE: " +
+                        "callId=$callId cseq=$cseq status=${response.statusCode}",
+                )
+                return@setResponseCallback false
+            }
+            when (response.statusCode) {
+                in 100..199 -> {
+                    Rlog.d(
+                        TAG,
+                        "Current foreground resume re-INVITE provisional: " +
+                            "callId=$callId status=${response.statusCode} cseq=$cseq",
+                    )
+                    false
+                }
+                in 200..299 -> {
+                    Rlog.w(
+                        TAG,
+                        "Current foreground resume re-INVITE accepted: " +
+                            "callId=$callId status=${response.statusCode} cseq=$cseq",
+                    )
+                    sendAckForLocalReinvite2xx(
+                        call = call,
+                        response = response,
+                        inviteCseqNumber = inviteCseq,
+                        requestHeaders = headers,
+                        label = "current foreground resume re-INVITE",
+                    )
+                    val resumedCall = callWithRtpFromLocalReinviteAnswer(
+                        call = call,
+                        response = response,
+                        label = "current foreground resume re-INVITE",
+                    )
+                    startResumedCurrentForegroundMedia(
+                        call = resumedCall,
+                        reason = "current foreground resume re-INVITE accepted",
+                    )
+                    onComplete(true)
+                    true
+                }
+                else -> {
+                    Rlog.w(
+                        TAG,
+                        "Current foreground resume re-INVITE failed: " +
+                            "callId=$callId status=${response.statusCode} ${response.statusString} cseq=$cseq",
+                    )
+                    onComplete(false)
+                    true
+                }
+            }
+        }
+
+        Rlog.w(
+            TAG,
+            "Sending current foreground resume re-INVITE: callId=$callId cseq=$inviteCseq " +
+                "codec=${call.audioCodec.name}/${call.audioCodec.sampleRate} " +
+                "localRtp=${call.rtpSocket.localAddress}:${call.rtpSocket.localPort} " +
+                "remote=${call.remoteContact}",
+        )
+        writeSipBytesWithFlush(
+            socket.gWriter(),
+            "current foreground resume re-INVITE callId=$callId",
+            resumeInvite.toByteArray(),
+        )
+        return true
     }
 
 
@@ -6374,7 +6546,26 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         thread {
             val held = heldForegroundCall
             if (held == null) {
-                Rlog.w(TAG, "Cannot resume held foreground call for call waiting without heldForegroundCall: requestedCallId=$callId")
+                val current = currentCall
+                val currentCallId = current?.callIdOrEmpty()
+                if (current != null && (callId == null || currentCallId == callId)) {
+                    Rlog.w(
+                        TAG,
+                        "Resuming current foreground call that is held without a background slot: " +
+                            "requestedCallId=$callId currentCallId=$currentCallId",
+                    )
+                    if (!sendResumeReinviteForCurrentForegroundCall(current, onComplete)) {
+                        onComplete(false)
+                    }
+                    return@thread
+                }
+
+                Rlog.w(
+                    TAG,
+                    "Cannot resume held/current foreground call for call waiting without matching call slot: " +
+                        "requestedCallId=$callId currentCallId=$currentCallId " +
+                        "pendingSwap=${pendingSwapHeldActiveCall?.callIdOrEmpty()}",
+                )
                 onComplete(false)
                 return@thread
             }
@@ -6385,6 +6576,46 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                     "Cannot resume held foreground call for call waiting: requestedCallId=$callId heldCallId=$heldCallId",
                 )
                 onComplete(false)
+                return@thread
+            }
+
+            val pendingSwapHeldActive = pendingSwapHeldActiveCall
+            if (pendingSwapHeldActive != null) {
+                val pendingActiveCallId = pendingSwapHeldActive.callIdOrEmpty()
+                Rlog.w(
+                    TAG,
+                    "Resuming held call after framework already held active swap call: " +
+                        "heldCallId=$heldCallId pendingActiveCallId=$pendingActiveCallId",
+                )
+                if (!sendResumeReinviteForHeldCall(held) { resumeSuccess ->
+                        if (resumeSuccess) {
+                            pendingSwapHeldActiveCall = null
+                            heldForegroundCall = pendingSwapHeldActive
+                            Rlog.w(
+                                TAG,
+                                "Moved pending swap active call to held foreground slot after successful resume: " +
+                                    "callId=$pendingActiveCallId swappedWith=$heldCallId",
+                            )
+                        } else {
+                            pendingSwapHeldActiveCall = null
+                            currentCall = pendingSwapHeldActive
+                            Rlog.w(
+                                TAG,
+                                "Resume after pending swap hold failed; restored previously active call: " +
+                                    "callId=$pendingActiveCallId heldCallId=$heldCallId",
+                            )
+                        }
+                        onComplete(resumeSuccess)
+                    }) {
+                    pendingSwapHeldActiveCall = null
+                    currentCall = pendingSwapHeldActive
+                    Rlog.w(
+                        TAG,
+                        "Could not send resume after pending swap hold; restored previously active call: " +
+                            "callId=$pendingActiveCallId heldCallId=$heldCallId",
+                    )
+                    onComplete(false)
+                }
                 return@thread
             }
 
@@ -6833,6 +7064,26 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
     }
 
 
+    private fun callForIncomingInviteDialog(callId: String): Call? {
+        val current = currentCall
+        if (current != null && current.callIdOrEmpty() == callId) return current
+
+        val pendingSwapHeld = pendingSwapHeldActiveCall
+        if (pendingSwapHeld != null && pendingSwapHeld.callIdOrEmpty() == callId) {
+            Rlog.d(TAG, "Routing incoming INVITE to pending swap held dialog: callId=$callId")
+            return pendingSwapHeld
+        }
+
+        val held = heldForegroundCall
+        if (held != null && held.callIdOrEmpty() == callId) {
+            Rlog.d(TAG, "Routing incoming INVITE to held foreground dialog: callId=$callId")
+            return held
+        }
+
+        return null
+    }
+
+
     fun handleCall(request: SipRequest): Int {
         val incomingCallId = request.headers["call-id"]!![0]
         rejectRecentlyTerminatedIncomingInviteIfNeeded(
@@ -6840,13 +7091,13 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             request = request,
         )?.let { return it }
         val incomingResponseWriter = dispatcher.writerForCallId(incomingCallId) ?: socket.gWriter()
-        val existingCall = currentCall
+        val activeCall = currentCall
+        val existingCall = callForIncomingInviteDialog(incomingCallId)
         val isInDialogInvite = existingCall != null &&
-            existingCall.callHeaders["call-id"]?.getOrNull(0) == incomingCallId &&
             request.headers["from"]?.any { it.contains(";tag=", ignoreCase = true) } == true &&
             request.headers["to"]?.any { it.contains(";tag=", ignoreCase = true) } == true
         if (isInDialogInvite) {
-            return handleInDialogInvite(request, existingCall!!, incomingResponseWriter)
+            return handleInDialogInvite(request, existingCall, incomingResponseWriter)
         }
         handleDuplicateIncomingInviteForExistingDialog(
             request = request,
@@ -6863,7 +7114,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             request = request,
             incomingCallId = incomingCallId,
             incomingResponseWriter = incomingResponseWriter,
-            existingCall = existingCall,
+            existingCall = activeCall,
         )?.let { return it }
 
         val contentType = request.headers["content-type"]?.getOrNull(0)
