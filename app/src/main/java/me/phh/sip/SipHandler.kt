@@ -1242,26 +1242,52 @@ fun onWfcDisabled(reason: String) {
     }
 
 
-private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
-        reconnectController.scheduleReconnectRetry(reason, delayMs)
+    private fun recoverAfterLocalTerminateWriteFailure(
+        requestName: String,
+        callId: String?,
+        reason: String,
+        t: Throwable,
+    ) {
+        val callIdText = callId ?: "<none>"
+        val reconnectReason =
+            "SIP transport lost while sending local $requestName callId=$callIdText: $reason"
+        Rlog.w(
+            TAG,
+            "$reconnectReason; clearing local call state and scheduling IMS reconnect",
+            t,
+        )
+
+        if (callId != null && currentCall?.callIdOrNull() == callId) {
+            currentCall = null
+        }
+        clearPendingOutgoingInvite(
+            callId = callId,
+            closeRtpSocket = true,
+            reason = "$reconnectReason (write failed)",
+        )
+        incomingAcceptedAwaitingAck.set(false)
+        incomingHangupAfterAck.set(false)
+        callStopped.set(true)
+        callStarted.set(false)
+        threadsStarted.set(false)
+
+        if (shouldReconnectAfterSipTransportLoss(reconnectReason)) {
+            reconnectIms(reconnectReason)
+        }
     }
 
+    private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
+        reconnectController.scheduleReconnectRetry(reason, delayMs)
+    }
 
     private fun failConnectAndRetry(reason: String, baseDelayMs: Long = 5000L) {
         maybeBlockCurrentPcscfForRegistrationFailure(reason)
         reconnectController.failConnectAndRetry(reason, baseDelayMs)
     }
 
-    
-
-    
-
-    
-
     private fun reconnectIms(reason: String, newNetwork: Network? = null, delayMs: Long = 1000L) {
         reconnectController.reconnectIms(reason, newNetwork, delayMs)
     }
-
 
     private fun restartOutgoingMediaAfterDialogSdpCodecChange(
         oldCall: Call?,
@@ -3907,11 +3933,21 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             cancelHeaders = cancelHeaders,
         )
         Rlog.d(TAG, SipRemoteDialogTermination.pendingCancelSendLog(pending.callId, reason, cancel))
-        writeSipBytesWithFlush(
-            socket.gWriter(),
-            SipRemoteDialogTermination.pendingCancelWriteLabel(),
-            cancel.toByteArray(),
-        )
+        try {
+            writeSipBytesWithFlush(
+                socket.gWriter(),
+                SipRemoteDialogTermination.pendingCancelWriteLabel(),
+                cancel.toByteArray(),
+            )
+        } catch (t: IOException) {
+            recoverAfterLocalTerminateWriteFailure(
+                requestName = "CANCEL",
+                callId = pending.callId,
+                reason = reason,
+                t = t,
+            )
+            return false
+        }
 
         /*
          * Clear stale pending outgoing INVITE immediately after local CANCEL.
