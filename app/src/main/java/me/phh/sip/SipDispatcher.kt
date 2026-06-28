@@ -98,6 +98,13 @@ internal class SipDispatcher(
 
         if (status == 0) return true
 
+        val responseHeaders = msg.headers.filter { (k, _) ->
+            k in listOf("cseq", "via", "from", "to", "call-id")
+        } + when (status) {
+            486 -> "Reason: Q.850;cause=17;text=\"User busy\"".toSipHeadersMap()
+            else -> emptyMap()
+        }
+
         val reply = SipResponse(
             statusCode = status,
             statusString = when (status) {
@@ -111,9 +118,7 @@ internal class SipDispatcher(
                 603 -> "Decline"
                 else -> "ERROR"
             },
-            headersParam = msg.headers.filter { (k, _) ->
-                k in listOf("cseq", "via", "from", "to", "call-id")
-            },
+            headersParam = responseHeaders,
         )
 
         Rlog.d(tag, "Replying back with $reply")

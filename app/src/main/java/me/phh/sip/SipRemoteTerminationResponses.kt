@@ -12,7 +12,7 @@ internal object SipRemoteTerminationResponses {
 
     fun inviteCseqFromCancel(request: SipRequest): String =
         request.headers["cseq"]?.getOrNull(0)
-            ?.replace(Regex("\\\\bCANCEL\\\\b", RegexOption.IGNORE_CASE), "INVITE")
+            ?.replace(Regex("\\bCANCEL\\b", RegexOption.IGNORE_CASE), "INVITE")
             ?: "1 INVITE"
 
     fun cancelledInviteHeaders(originalInviteCseq: String): SipHeadersMap = (
