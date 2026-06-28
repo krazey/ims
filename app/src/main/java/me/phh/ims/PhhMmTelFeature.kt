@@ -938,6 +938,56 @@ sipHandler.imsFailureCallback = {
                     Rlog.d(TAG, "Deflecting call to $deflectNumber")
                 }
 
+                override fun hold(profile: ImsStreamMediaProfile) {
+                    Rlog.w(
+                        TAG,
+                        "Incoming call hold requested for call-waiting swap: " +
+                            "callId=$incomingCallId profile=$profile",
+                    )
+                    sipHandler.holdForegroundCallForWaiting(incomingCallId) { success ->
+                        if (success) {
+                            callProfile.mMediaProfile.mAudioDirection =
+                                android.telephony.ims.ImsStreamMediaProfile.DIRECTION_INACTIVE
+                            Rlog.w(TAG, "Incoming call SIP hold accepted; reporting callSessionHeld(): callId=$incomingCallId")
+                            sessionListener?.callSessionHeld(callProfile)
+                        } else {
+                            Rlog.w(TAG, "Incoming call SIP hold failed: callId=$incomingCallId")
+                            sessionListener?.callSessionHoldFailed(
+                                ImsReasonInfo(
+                                    ImsReasonInfo.CODE_NETWORK_REJECT,
+                                    0,
+                                    "SIP hold failed",
+                                ),
+                            )
+                        }
+                    }
+                }
+
+                override fun resume(profile: ImsStreamMediaProfile) {
+                    Rlog.w(
+                        TAG,
+                        "Incoming call resume requested for call-waiting swap: " +
+                            "callId=$incomingCallId profile=$profile",
+                    )
+                    sipHandler.resumeHeldForegroundCallForWaiting(incomingCallId) { success ->
+                        if (success) {
+                            callProfile.mMediaProfile.mAudioDirection =
+                                android.telephony.ims.ImsStreamMediaProfile.DIRECTION_SEND_RECEIVE
+                            Rlog.w(TAG, "Incoming call SIP resume accepted; reporting callSessionResumed(): callId=$incomingCallId")
+                            sessionListener?.callSessionResumed(callProfile)
+                        } else {
+                            Rlog.w(TAG, "Incoming call SIP resume failed: callId=$incomingCallId")
+                            sessionListener?.callSessionResumeFailed(
+                                ImsReasonInfo(
+                                    ImsReasonInfo.CODE_NETWORK_REJECT,
+                                    0,
+                                    "SIP resume failed",
+                                ),
+                            )
+                        }
+                    }
+                }
+
                 override fun reject(reason: Int) {
                     // Keep the listener registered until the SIP final response path
                     // calls onCancelledCall() with this Call-ID. Removing it here can

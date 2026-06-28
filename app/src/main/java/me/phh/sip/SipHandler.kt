@@ -6289,6 +6289,87 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
     }
 
 
+
+    private fun swapActiveAndHeldForegroundForWaiting(
+        active: Call,
+        held: Call,
+        onComplete: (Boolean) -> Unit,
+    ) {
+        val activeCallId = active.callIdOrEmpty()
+        val heldCallId = held.callIdOrEmpty()
+        Rlog.w(
+            TAG,
+            "Swapping active and held foreground calls for call waiting: " +
+                "activeCallId=$activeCallId heldCallId=$heldCallId",
+        )
+
+        if (!sendHoldReinviteForCall(active) { holdSuccess ->
+                if (!holdSuccess) {
+                    Rlog.w(
+                        TAG,
+                        "Call-waiting swap failed while holding active call: " +
+                            "activeCallId=$activeCallId heldCallId=$heldCallId",
+                    )
+                    onComplete(false)
+                    return@sendHoldReinviteForCall
+                }
+
+                Rlog.w(
+                    TAG,
+                    "Active call held for call-waiting swap; moving it to held slot before resume: " +
+                        "activeCallId=$activeCallId heldCallId=$heldCallId",
+                )
+                callStopped.set(true)
+                callStarted.set(false)
+                threadsStarted.set(false)
+                if (currentCall?.callIdOrEmpty() == activeCallId) {
+                    currentCall = null
+                } else {
+                    Rlog.w(
+                        TAG,
+                        "Current call changed while swapping call waiting calls: " +
+                            "expectedActive=$activeCallId current=${currentCall?.callIdOrEmpty()}",
+                    )
+                }
+
+                if (!sendResumeReinviteForHeldCall(held) { resumeSuccess ->
+                        if (resumeSuccess) {
+                            heldForegroundCall = active
+                            Rlog.w(
+                                TAG,
+                                "Moved previously active call to held foreground slot after successful call-waiting swap: " +
+                                    "callId=$activeCallId swappedWith=$heldCallId",
+                            )
+                        } else {
+                            Rlog.w(
+                                TAG,
+                                "Call-waiting swap failed while resuming held call; restoring local slots: " +
+                                    "activeCallId=$activeCallId heldCallId=$heldCallId",
+                            )
+                            currentCall = active
+                            heldForegroundCall = held
+                        }
+                        onComplete(resumeSuccess)
+                    }) {
+                    Rlog.w(
+                        TAG,
+                        "Call-waiting swap could not send resume re-INVITE; restoring local slots: " +
+                            "activeCallId=$activeCallId heldCallId=$heldCallId",
+                    )
+                    currentCall = active
+                    heldForegroundCall = held
+                    onComplete(false)
+                }
+            }) {
+            Rlog.w(
+                TAG,
+                "Call-waiting swap could not send hold re-INVITE: " +
+                    "activeCallId=$activeCallId heldCallId=$heldCallId",
+            )
+            onComplete(false)
+        }
+    }
+
     fun resumeHeldForegroundCallForWaiting(callId: String? = null, onComplete: (Boolean) -> Unit) {
         thread {
             val held = heldForegroundCall
@@ -6306,6 +6387,17 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                 onComplete(false)
                 return@thread
             }
+
+            val active = currentCall
+            if (active != null && active.callIdOrEmpty() != heldCallId) {
+                swapActiveAndHeldForegroundForWaiting(
+                    active = active,
+                    held = held,
+                    onComplete = onComplete,
+                )
+                return@thread
+            }
+
             if (!sendResumeReinviteForHeldCall(held, onComplete)) {
                 onComplete(false)
             }
