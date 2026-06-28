@@ -3546,7 +3546,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         val acceptedCallId: String,
     )
 
-    private fun acceptedIncomingCallAfterAccessGuard(): IncomingAcceptTarget? {
+    private fun acceptedIncomingCallAfterAccessGuard(requestedCallId: String? = null): IncomingAcceptTarget? {
         var call = currentCall
         if (call == null || call.outgoing) {
             Rlog.w(TAG, SipIncomingInviteFinalResponses.acceptWithoutValidIncomingCallLog(call))
@@ -3554,6 +3554,14 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         }
 
         val acceptedCallId = call.callIdOrEmpty()
+        if (requestedCallId != null && requestedCallId != acceptedCallId) {
+            Rlog.w(
+                TAG,
+                "acceptCall requested for callId=$requestedCallId but current incoming call is callId=$acceptedCallId",
+            )
+            return null
+        }
+
         if (!delayIncomingAcceptAfterRecentImsAccessChange(acceptedCallId)) {
             return null
         }
@@ -3577,9 +3585,9 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         )
     }
 
-    fun acceptCall() {
+    fun acceptCall(callId: String? = null) {
         thread {
-            val acceptTarget = acceptedIncomingCallAfterAccessGuard() ?: return@thread
+            val acceptTarget = acceptedIncomingCallAfterAccessGuard(callId) ?: return@thread
             var call = acceptTarget.call
             val acceptedCallId = acceptTarget.acceptedCallId
 
@@ -3647,7 +3655,7 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         writeSipBytesWithFlush(socket.gWriter(), "SipHandler msg", msg.toByteArray())
     }
 
-    fun rejectCall() {
+    fun rejectCall(callId: String? = null) {
         thread {
             val call = currentCall
             if (call == null || call.outgoing) {
@@ -3655,6 +3663,13 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
                 return@thread
             }
             val rejectedCallId = call.callIdOrEmpty()
+            if (callId != null && callId != rejectedCallId) {
+                Rlog.w(
+                    TAG,
+                    "rejectCall requested for callId=$callId but current incoming call is callId=$rejectedCallId",
+                )
+                return@thread
+            }
             rememberTerminatedIncomingCall(
                 rejectedCallId,
                 SipIncomingInviteFinalResponses.localRejectTerminationReason(),
@@ -3769,12 +3784,19 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         )
     }
 
-    fun terminateCall() {
+    fun terminateCall(callId: String? = null) {
         val call = currentCall
         val pendingOutgoing = pendingOutgoingInvite
 
         if (call == null) {
             if (pendingOutgoing != null) {
+                if (callId != null && callId != pendingOutgoing.callId) {
+                    Rlog.w(
+                        TAG,
+                        "terminateCall requested for callId=$callId but only pending outgoing call is callId=${pendingOutgoing.callId}",
+                    )
+                    return
+                }
                 Rlog.w(TAG, SipRemoteDialogTermination.pendingOutgoingHangupLog(pendingOutgoing.callId))
                 stopCallRuntime(SipRemoteDialogTermination.localTerminateReason())
                 sendCancelForPendingOutgoingInvite(
@@ -3790,6 +3812,15 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             }
 
             Rlog.w(TAG, SipRemoteDialogTermination.terminateWithoutCallLog())
+            return
+        }
+
+        val currentCallId = call.callIdOrEmpty()
+        if (callId != null && callId != currentCallId) {
+            Rlog.w(
+                TAG,
+                "terminateCall requested for callId=$callId but current call is callId=$currentCallId outgoing=${call.outgoing}",
+            )
             return
         }
 
@@ -5461,13 +5492,37 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         incomingCallId: String,
         existingCall: Call?,
     ): Int? {
+        val activeCallId = existingCall?.callHeaders?.get("call-id")?.getOrNull(0)
+        val activeCallOutgoing = existingCall?.outgoing
+        val pendingOutgoingCallId = pendingOutgoingInvite?.callId
+        val callWaitingInfo = SipCallWaitingInviteClassifier.classify(
+            request = request,
+            incomingCallId = incomingCallId,
+            activeCallId = activeCallId,
+            activeCallOutgoing = activeCallOutgoing,
+            pendingOutgoingCallId = pendingOutgoingCallId,
+        )
+        if (callWaitingInfo.looksLikeCarrierCallWaiting) {
+            Rlog.w(
+                TAG,
+                "Detected carrier call-waiting INVITE; current fallback will reject it as busy: " +
+                    callWaitingInfo.logSummary(),
+            )
+        } else if (callWaitingInfo.isInviteWhileBusy) {
+            Rlog.w(
+                TAG,
+                "Detected concurrent incoming INVITE while busy; current fallback will reject it as busy: " +
+                    callWaitingInfo.logSummary(),
+            )
+        }
+
         val decision = SipIncomingInviteDialogSetup.rejectWhileBusyOrOutgoingPending(
             logTag = TAG,
             request = request,
             incomingCallId = incomingCallId,
-            activeCallId = existingCall?.callHeaders?.get("call-id")?.getOrNull(0),
-            activeCallOutgoing = existingCall?.outgoing,
-            pendingOutgoingCallId = pendingOutgoingInvite?.callId,
+            activeCallId = activeCallId,
+            activeCallOutgoing = activeCallOutgoing,
+            pendingOutgoingCallId = pendingOutgoingCallId,
         ) ?: return null
 
         rememberTerminatedIncomingCall(incomingCallId, decision.terminatedReason)
@@ -5763,8 +5818,6 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
 
 
     fun handleCall(request: SipRequest): Int {
-        val contentType = request.headers["content-type"]?.get(0)
-        if (contentType != "application/sdp") return 404
         val incomingCallId = request.headers["call-id"]!![0]
         rejectRecentlyTerminatedIncomingInviteIfNeeded(
             incomingCallId = incomingCallId,
@@ -5791,6 +5844,13 @@ private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
             incomingCallId = incomingCallId,
             existingCall = existingCall,
         )?.let { return it }
+
+        val contentType = request.headers["content-type"]?.getOrNull(0)
+        val isSdpInvite = contentType
+            ?.substringBefore(';')
+            ?.trim()
+            ?.equals("application/sdp", ignoreCase = true) == true
+        if (!isSdpInvite) return 404
 
         resetIncomingCallStateForNewInvite()
 

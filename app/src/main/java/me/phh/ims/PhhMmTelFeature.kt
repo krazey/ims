@@ -200,6 +200,11 @@ class PhhMmTelFeature(
     private var sipHandlerSubId = SubscriptionManager.INVALID_SUBSCRIPTION_ID
     private var outgoingCallListener: ImsCallSessionListener? = null
     private var outgoingCallActive = false
+    private var outgoingCallSipCallId: String? = null
+    private val incomingCallListenersLock = Object()
+    private val incomingCallListenersByCallId = mutableMapOf<String, ImsCallSessionListener>()
+    private var lastIncomingCallListener: ImsCallSessionListener? = null
+
     fun getSipHandlerOrNull(): SipHandler? {
         return if (
             this::sipHandler.isInitialized &&
@@ -208,6 +213,49 @@ class PhhMmTelFeature(
             sipHandler
         } else {
             null
+        }
+    }
+
+    private fun rememberIncomingCallListener(callId: String, listener: ImsCallSessionListener) {
+        synchronized(incomingCallListenersLock) {
+            incomingCallListenersByCallId[callId] = listener
+            lastIncomingCallListener = listener
+        }
+    }
+
+    private fun forgetIncomingCallListener(callId: String) {
+        synchronized(incomingCallListenersLock) {
+            val removed = incomingCallListenersByCallId.remove(callId)
+            if (removed != null && lastIncomingCallListener == removed) {
+                lastIncomingCallListener = incomingCallListenersByCallId.values.lastOrNull()
+            }
+        }
+    }
+
+    private fun takeIncomingCallListener(callId: String?): ImsCallSessionListener? {
+        synchronized(incomingCallListenersLock) {
+            val normalizedCallId = callId?.takeIf { it.isNotBlank() }
+
+            val listener = if (normalizedCallId != null) {
+                // A non-empty Call-ID is authoritative. Do not fall back to
+                // the last incoming listener on a miss, otherwise an outgoing
+                // foreground termination can wrongly terminate a waiting call.
+                incomingCallListenersByCallId.remove(normalizedCallId)
+            } else {
+                val fallbackListener = lastIncomingCallListener
+                val fallbackCallId = incomingCallListenersByCallId.entries
+                    .firstOrNull { it.value == fallbackListener }
+                    ?.key
+                if (fallbackCallId != null) {
+                    incomingCallListenersByCallId.remove(fallbackCallId)
+                }
+                fallbackListener
+            }
+
+            if (listener != null && lastIncomingCallListener == listener) {
+                lastIncomingCallListener = incomingCallListenersByCallId.values.lastOrNull()
+            }
+            return listener
         }
     }
 
@@ -760,25 +808,27 @@ sipHandler.imsFailureCallback = {
         sipHandler.onSmsReceived = imsSms::onSmsReceived
         sipHandler.onSmsStatusReportReceived = imsSms::onSmsStatusReportReceived
 
-        var callListener: ImsCallSessionListener? = null
         sipHandler.onIncomingCall = { handle: Object, from: String, extras: Map<String, String> -> 
             val callerNumber = from.trim()
             val callProfile = makeVoiceCallProfile(
             callerNumber,
             audioQualityFromSipExtras(extras),
         )
+            val incomingCallId = extras["call-id"]!!
             val incomingSession = object: ImsCallSessionImplBase() {
                 var mState = State.IDLE
+                private var sessionListener: ImsCallSessionListener? = null
                 override fun getCallProfile(): ImsCallProfile {
                     return callProfile
                 }
                 override fun setListener(listener: ImsCallSessionListener) {
-                    Rlog.d(TAG, "Setting CallListener to $listener")
-                    callListener = listener
+                    Rlog.d(TAG, "Setting incoming CallListener for callId=$incomingCallId to $listener")
+                    sessionListener = listener
+                    rememberIncomingCallListener(incomingCallId, listener)
                 }
 
                 override fun getCallId(): String {
-                    return extras["call-id"]!!
+                    return incomingCallId
                 }
 
                 override fun getLocalCallProfile(): ImsCallProfile {
@@ -802,9 +852,9 @@ sipHandler.imsFailureCallback = {
 
                 override fun accept(callType: Int, profile: ImsStreamMediaProfile) {
                     Rlog.d(TAG, "Accepting call with profile $profile")
-                    sipHandler.acceptCall()
+                    sipHandler.acceptCall(incomingCallId)
                     mState = State.ESTABLISHED
-                    callListener?.callSessionInitiated(callProfile)
+                    sessionListener?.callSessionInitiated(callProfile)
                 }
 
                 override fun deflect(deflectNumber: String?) {
@@ -812,7 +862,8 @@ sipHandler.imsFailureCallback = {
                 }
 
                 override fun reject(reason: Int) {
-                    sipHandler.rejectCall()
+                    sipHandler.rejectCall(incomingCallId)
+                    forgetIncomingCallListener(incomingCallId)
                     Rlog.d(TAG, "Rejecting call $reason")
                 }
 
@@ -834,8 +885,9 @@ sipHandler.imsFailureCallback = {
                 override fun terminate(reason: Int) {
                     Rlog.d(TAG, "Terminating call")
                     sipHandler.myHandler.post {
-                        sipHandler.terminateCall()
-                        callListener?.callSessionTerminated(ImsReasonInfo(ImsReasonInfo.CODE_USER_TERMINATED, 0, "Kikoo"))
+                        sipHandler.terminateCall(incomingCallId)
+                        forgetIncomingCallListener(incomingCallId)
+                        sessionListener?.callSessionTerminated(ImsReasonInfo(ImsReasonInfo.CODE_USER_TERMINATED, 0, "Kikoo"))
                     }
                 }
 
@@ -848,16 +900,44 @@ sipHandler.imsFailureCallback = {
             }
         }
         sipHandler.onCancelledCall = { param: Object, reason: String, map: Map<String, String> ->
-    Rlog.d(TAG, "Cancelling call")
-        val reasonInfo = cancelledReasonInfo(map)
-            if (outgoingCallActive) {
-        outgoingCallListener?.callSessionTerminated(reasonInfo)
-        outgoingCallActive = false
-        outgoingCallListener = null
-    } else {
-        callListener?.callSessionTerminated(reasonInfo)
-    }
-}
+            Rlog.d(TAG, "Cancelling call")
+            val reasonInfo = cancelledReasonInfo(map)
+            val cancelledCallId = map["call-id"]?.takeIf { it.isNotBlank() }
+
+            if (cancelledCallId != null && cancelledCallId == outgoingCallSipCallId) {
+                Rlog.d(TAG, "Routing outgoing call cancellation to callId=$cancelledCallId")
+                outgoingCallListener?.callSessionTerminated(reasonInfo)
+                outgoingCallActive = false
+                outgoingCallSipCallId = null
+                outgoingCallListener = null
+            } else {
+                val incomingListener = cancelledCallId?.let { takeIncomingCallListener(it) }
+                if (incomingListener != null) {
+                    Rlog.d(TAG, "Routing incoming call cancellation to callId=$cancelledCallId")
+                    incomingListener.callSessionTerminated(reasonInfo)
+                } else if (cancelledCallId != null) {
+                    Rlog.w(
+                        TAG,
+                        "No IMS call listener for cancellation callId=$cancelledCallId; " +
+                            "not falling back to another call. reason=$reason map=$map",
+                    )
+                } else if (outgoingCallActive) {
+                    Rlog.w(TAG, "Routing cancellation without Call-ID to foreground outgoing call: reason=$reason map=$map")
+                    outgoingCallListener?.callSessionTerminated(reasonInfo)
+                    outgoingCallActive = false
+                    outgoingCallSipCallId = null
+                    outgoingCallListener = null
+                } else {
+                    val fallbackIncomingListener = takeIncomingCallListener(null)
+                    if (fallbackIncomingListener != null) {
+                        Rlog.w(TAG, "Routing incoming call cancellation without Call-ID to last incoming listener: reason=$reason map=$map")
+                        fallbackIncomingListener.callSessionTerminated(reasonInfo)
+                    } else {
+                        Rlog.w(TAG, "No IMS call listener for cancellation callId=$cancelledCallId reason=$reason map=$map")
+                    }
+                }
+            }
+        }
         sipHandler.getVolteNetwork()
     }
 
