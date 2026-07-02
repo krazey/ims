@@ -45,14 +45,8 @@ class PhhImsBroadcastReceiver : BroadcastReceiver() {
                 try {
                     sipHandler.register()
                 } catch (e: IOException) {
-                    Rlog.w(TAG, "Periodic REGISTER failed, reconnecting", e)
-
-                    try {
-                        sipHandler.connect()
-                    } catch (e2: Throwable) {
-                        Rlog.e(TAG, "Reconnect after failed REGISTER also failed", e2)
-                        sipHandler.imsFailureCallback?.invoke()
-                    }
+                    Rlog.w(TAG, "Periodic REGISTER failed; requesting controlled reconnect", e)
+                    sipHandler.recoverAfterPeriodicRegisterFailure(e)
                 }
             }
         }

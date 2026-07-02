@@ -20,6 +20,8 @@ import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 class SipHandler(
     val ctxt: Context,
@@ -354,6 +356,13 @@ class SipHandler(
     var imsFailureCallback: (() -> Unit)? = null
     var imsRegisteringCallback: ((Int) -> Unit)? = null
     private var imsRegistrationTech = REGISTRATION_TECH_LTE
+    // Keep SIP reconnect single-flight. A transport EOF and the periodic
+    // REGISTER alarm can arrive close together; without this guard they can
+    // start two protected REGISTER flows on shared socket/IPsec state.
+    private val imsReconnectSingleFlight = AtomicBoolean(false)
+    private val imsReconnectSingleFlightUntilMs = AtomicLong(0L)
+    private val imsReconnectSingleFlightReason = AtomicReference<String?>(null)
+
     private var pendingCellularReconnectAfterWfcDisable = false
     private var pendingImsReconnectAfterActiveCallReason: String? = null
     @Volatile
@@ -977,6 +986,8 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
     }
 
     fun shutdown(reason: String, notifyFramework: Boolean = true) {
+        clearImsReconnectSingleFlight("shutdown: $reason")
+
         myHandler.post {
             Rlog.w(
                 TAG,
@@ -1276,6 +1287,73 @@ fun onWfcDisabled(reason: String) {
         }
     }
 
+    private fun reserveImsReconnectSingleFlight(reason: String, delayMs: Long): Boolean {
+        val now = android.os.SystemClock.uptimeMillis()
+        val currentUntil = imsReconnectSingleFlightUntilMs.get()
+        val currentReason = imsReconnectSingleFlightReason.get()
+
+        if (imsReconnectSingleFlight.get() && now < currentUntil) {
+            Rlog.w(
+                TAG,
+                "Suppressing duplicate IMS reconnect: new=$reason existing=$currentReason " +
+                    "remainingMs=${currentUntil - now}",
+            )
+            return false
+        }
+
+        if (!imsReconnectSingleFlight.compareAndSet(false, true)) {
+            val racedUntil = imsReconnectSingleFlightUntilMs.get()
+            val racedReason = imsReconnectSingleFlightReason.get()
+            if (now < racedUntil) {
+                Rlog.w(
+                    TAG,
+                    "Suppressing duplicate IMS reconnect after race: new=$reason " +
+                        "existing=$racedReason remainingMs=${racedUntil - now}",
+                )
+                return false
+            }
+
+            // A stale guard outlived its hold window. Reset it and try once.
+            imsReconnectSingleFlight.set(false)
+            if (!imsReconnectSingleFlight.compareAndSet(false, true)) {
+                Rlog.w(
+                    TAG,
+                    "Suppressing duplicate IMS reconnect because another requester won the gate: " +
+                        "new=$reason existing=${imsReconnectSingleFlightReason.get()}",
+                )
+                return false
+            }
+        }
+
+        val holdForMs = delayMs.coerceAtLeast(1_000L) + 45_000L
+        imsReconnectSingleFlightUntilMs.set(now + holdForMs)
+        imsReconnectSingleFlightReason.set(reason)
+        Rlog.w(TAG, "Reserved IMS reconnect single-flight holdForMs=$holdForMs reason=$reason")
+        return true
+    }
+
+    private fun clearImsReconnectSingleFlight(reason: String) {
+        if (imsReconnectSingleFlight.getAndSet(false)) {
+            Rlog.d(
+                TAG,
+                "Clearing IMS reconnect single-flight: $reason " +
+                    "previous=${imsReconnectSingleFlightReason.get()}",
+            )
+        }
+        imsReconnectSingleFlightUntilMs.set(0L)
+        imsReconnectSingleFlightReason.set(null)
+    }
+
+
+    fun recoverAfterPeriodicRegisterFailure(t: Throwable) {
+        val reason = "periodic REGISTER failed: ${t.javaClass.simpleName}"
+        Rlog.w(TAG, "$reason; scheduling controlled IMS reconnect", t)
+
+        if (shouldReconnectAfterSipTransportLoss(reason)) {
+            reconnectIms(reason, delayMs = 0L)
+        }
+    }
+
     private fun scheduleReconnectRetry(reason: String, delayMs: Long) {
         reconnectController.scheduleReconnectRetry(reason, delayMs)
     }
@@ -1286,6 +1364,9 @@ fun onWfcDisabled(reason: String) {
     }
 
     private fun reconnectIms(reason: String, newNetwork: Network? = null, delayMs: Long = 1000L) {
+        if (!reserveImsReconnectSingleFlight(reason, delayMs)) {
+            return
+        }
         reconnectController.reconnectIms(reason, newNetwork, delayMs)
     }
 
@@ -1462,6 +1543,8 @@ fun onWfcDisabled(reason: String) {
 
 
     private fun handleAuthenticatedRegisterSuccess(regReply: SipResponse) {
+        clearImsReconnectSingleFlight("authenticated REGISTER succeeded")
+
         reconnectController.markConnected()
 
         installSipCallbacks()
@@ -1471,6 +1554,36 @@ fun onWfcDisabled(reason: String) {
     }
 
 
+    private fun readRegisterReplyWithTimeout(
+        label: String,
+        timeoutMs: Long = 20_000L,
+        readReply: () -> SipMessage?,
+    ): SipMessage? {
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "PhhImsRegisterReplyTimeout").apply { isDaemon = true }
+        }
+        val future = executor.submit(java.util.concurrent.Callable<SipMessage?> { readReply() })
+        return try {
+            future.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (t: java.util.concurrent.TimeoutException) {
+            Rlog.w(TAG, "$label timed out after ${timeoutMs}ms; forcing SIP transport cleanup", t)
+            try {
+                closeSipTransports("$label timeout")
+            } catch (cleanup: Throwable) {
+                Rlog.w(TAG, "Failed to close SIP transports after REGISTER read timeout", cleanup)
+            }
+            try {
+                closeIpsecResources("$label timeout")
+            } catch (cleanup: Throwable) {
+                Rlog.w(TAG, "Failed to close SIP IPsec resources after REGISTER read timeout", cleanup)
+            }
+            throw java.io.IOException("$label timed out after ${timeoutMs}ms", t)
+        } finally {
+            future.cancel(true)
+            executor.shutdownNow()
+        }
+    }
+
     private fun readRegisterReplyOrRetry(
         readFailureLog: String,
         readFailureReason: String,
@@ -1479,7 +1592,10 @@ fun onWfcDisabled(reason: String) {
         readReply: () -> SipMessage?,
     ): SipMessage? {
         val reply = try {
-            readReply()
+            readRegisterReplyWithTimeout(
+                label = readFailureReason,
+                readReply = readReply,
+            )
         } catch (t: Throwable) {
             Rlog.w(TAG, readFailureLog, t)
             failConnectAndRetry(readFailureReason)
@@ -2137,6 +2253,8 @@ fun onWfcDisabled(reason: String) {
         callback: ConnectivityManager.NetworkCallback,
         lostNetwork: Network,
     ) {
+        clearImsReconnectSingleFlight("IMS network lost")
+
         Rlog.d(TAG, "IMS network lost ${imsDualSimDebugContext("lost=$lostNetwork")}")
         if (this::network.isInitialized && network == lostNetwork) {
             try {
