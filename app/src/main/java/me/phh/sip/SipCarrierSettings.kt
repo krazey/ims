@@ -43,6 +43,30 @@ data class SipInviteFailurePolicy(
     val reconnectAfterFinalFailureDelayMs: Long = 1_000L,
 )
 
+data class SipPublicNumberNormalizationPolicy(
+    val kazakhstanMobileWithoutCountryCode: Boolean = false,
+) {
+    fun normalizeToE164(stripped: String): String? {
+        if (!kazakhstanMobileWithoutCountryCode) {
+            return null
+        }
+
+        return when {
+            // National mobile/public form, seen from IMS as 7000000000.
+            stripped.length == 10 && stripped.startsWith("7") -> "+7$stripped"
+
+            // Trunk-prefix form used in Kazakhstan, for example 87000000000.
+            stripped.length == 11 && stripped.startsWith("8") &&
+                stripped.drop(1).startsWith("7") -> "+7${stripped.drop(1)}"
+
+            // Country-code form without '+', for example 77000000000.
+            stripped.length == 11 && stripped.startsWith("7") -> "+$stripped"
+
+            else -> null
+        }
+    }
+}
+
 data class SipCarrierPolicy(
     val mcc: String,
     val mnc: String,
@@ -58,6 +82,8 @@ data class SipCarrierPolicy(
     val securityClientAlgs: List<String> = DEFAULT_SECURITY_CLIENT_ALGS,
     val securityClientEalgs: List<String> = DEFAULT_SECURITY_CLIENT_EALGS,
     val fallbackEmergencyDialStrings: Set<String> = DEFAULT_FALLBACK_EMERGENCY_DIAL_STRINGS,
+    val publicNumberNormalizationPolicy: SipPublicNumberNormalizationPolicy =
+        SipPublicNumberNormalizationPolicy(),
     val registrationRecoveryPolicy: SipRegistrationRecoveryPolicy = SipRegistrationRecoveryPolicy(),
     val smsPolicy: SipSmsPolicy = SipSmsPolicy(),
     val inviteFailurePolicy: SipInviteFailurePolicy = SipInviteFailurePolicy(),
@@ -76,6 +102,9 @@ data class SipCarrierPolicy(
 
     fun isFallbackEmergencyDialString(normalizedPhoneNumber: String): Boolean =
         normalizedPhoneNumber in fallbackEmergencyDialStrings
+
+    fun normalizePublicNumberToE164(stripped: String): String? =
+        publicNumberNormalizationPolicy.normalizeToE164(stripped)
 
     fun phoneContextForLocalTelUri(realm: String): String {
         val candidate = realm.trim()
@@ -219,6 +248,16 @@ data class SipCarrierPolicy(
                     outgoingPaniPolicy = OutgoingPaniPolicy.REGISTRATION_ACCESS_TECH,
                 )
 
+                "401077" -> defaultFor(mcc, mnc).copy(
+                    // KZ IMS exposes +7 mobile/public numbers without the
+                    // country code on HD calls and rejects outgoing TEL URIs
+                    // built from that local form.
+                    publicNumberNormalizationPolicy =
+                        SipPublicNumberNormalizationPolicy(
+                            kazakhstanMobileWithoutCountryCode = true,
+                        ),
+                )
+
                 "450006" -> defaultFor(mcc, mnc).copy(
                     // LG U+ can only do UDP and requires non-session AKA.
                     isControlSocketUdp = true,
@@ -282,6 +321,9 @@ data class SipCarrierSettings(
 
     fun isFallbackEmergencyDialString(normalizedPhoneNumber: String): Boolean =
         policy.isFallbackEmergencyDialString(normalizedPhoneNumber)
+
+    fun normalizePublicNumberToE164(stripped: String): String? =
+        policy.normalizePublicNumberToE164(stripped)
 
     fun phoneContextForLocalTelUri(realm: String): String =
         policy.phoneContextForLocalTelUri(realm)

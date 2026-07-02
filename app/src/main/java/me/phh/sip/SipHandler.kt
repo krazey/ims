@@ -77,6 +77,16 @@ class SipHandler(
             activeSubscription = activeSubscription,
             telephonyManager = subTelephonyManager,
             logTag = TAG,
+            carrierSettings = carrierSettings,
+        )
+
+    private fun normalizeIncomingCallerNumberForFramework(rawCaller: String): String =
+        OutgoingDialTargetNormalizer.normalize(
+            rawPhoneNumber = rawCaller,
+            activeSubscription = activeSubscription,
+            telephonyManager = subTelephonyManager,
+            logTag = TAG,
+            carrierSettings = carrierSettings,
         )
 
     private val wfcSubscriptionSettingMonitor = WfcSubscriptionSettingMonitor(
@@ -6057,7 +6067,11 @@ fun onWfcDisabled(reason: String) {
         val ringingResponse = SipIncomingInviteDialogSetup.plainRingingResponse(waitingHeaders)
         val ringingBytes = ringingResponse.toByteArray()
         val callerNumber = waitingOffer?.callerNumber
-            ?: extractCallerNumberFromHeader(request.headers["from"]?.getOrNull(0).orEmpty()).trim()
+            ?: normalizeIncomingCallerNumberForFramework(
+                extractCallerNumberFromHeader(
+                    request.headers["from"]?.getOrNull(0).orEmpty(),
+                ).trim(),
+            )
         val remoteContact = request.headers["contact"]?.getOrNull(0)
             ?.let { extractDestinationFromContact(it) }
             .orEmpty()
@@ -6940,7 +6954,11 @@ fun onWfcDisabled(reason: String) {
             logTag = TAG,
             hasIncomingResponseWriter = requestWriters.containsKey(incomingCallId),
             amrWbMediaCodecAvailable = amrWbMediaCodecAvailable,
-            extractCallerNumberFromHeader = { header -> extractCallerNumberFromHeader(header) },
+            extractCallerNumberFromHeader = { header ->
+                normalizeIncomingCallerNumberForFramework(
+                    extractCallerNumberFromHeader(header),
+                )
+            },
         )
 
 

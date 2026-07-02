@@ -12,6 +12,7 @@ object OutgoingDialTargetNormalizer {
         activeSubscription: SubscriptionInfo,
         telephonyManager: TelephonyManager,
         logTag: String,
+        carrierSettings: SipCarrierSettings? = null,
     ): String {
         val stripped = PhoneNumberUtils.stripSeparators(rawPhoneNumber).trim()
 
@@ -36,9 +37,7 @@ object OutgoingDialTargetNormalizer {
             return "+" + stripped.drop(2)
         }
 
-        // Only rewrite obvious national public numbers. Short codes like 110,
-        // 112, 116117, mailbox codes, etc. must keep their original form.
-        if (!stripped.all { it.isDigit() } || !stripped.startsWith("0")) {
+        if (!stripped.all { it.isDigit() }) {
             return stripped
         }
 
@@ -47,6 +46,22 @@ object OutgoingDialTargetNormalizer {
             telephonyManager.simCountryIso,
             telephonyManager.networkCountryIso,
         ).firstOrNull { !it.isNullOrBlank() }
+
+        carrierSettings?.normalizePublicNumberToE164(stripped)?.let { e164 ->
+            Rlog.d(
+                logTag,
+                "Carrier-policy normalized public number to E.164: " +
+                    "raw=$rawPhoneNumber stripped=$stripped e164=$e164 " +
+                    "carrier=${carrierSettings.mccMnc} countryIso=$countryIso",
+            )
+            return e164
+        }
+
+        // Only rewrite obvious national public numbers. Short codes like 110,
+        // 112, 116117, mailbox codes, etc. must keep their original form.
+        if (!stripped.startsWith("0")) {
+            return stripped
+        }
 
         val e164 = countryIso?.let { iso ->
             PhoneNumberUtils.formatNumberToE164(stripped, iso.uppercase())
@@ -63,4 +78,5 @@ object OutgoingDialTargetNormalizer {
 
         return e164
     }
+
 }
