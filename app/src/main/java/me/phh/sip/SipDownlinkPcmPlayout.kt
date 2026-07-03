@@ -10,6 +10,7 @@ import kotlin.concurrent.thread
 
 object SipDownlinkPcmPlayout {
     private const val DOWNLINK_UNDERRUN_CONCEALMENT_FRAMES = 6
+    private const val DOWNLINK_STARTUP_CONCEALMENT_PRIME_FRAMES = 4
 
     private fun attenuatePcm16LeFrame(frame: ByteArray, gainShift: Int): ByteArray {
         val out = ByteArray(frame.size)
@@ -44,6 +45,8 @@ object SipDownlinkPcmPlayout {
             }
 
             var fillerFrames = 0
+            var startupConcealmentPrimed = false
+            var realFramesSinceLastUnderrun = 0
             var lastGoodPcmFrame: ByteArray? = null
             var nextWriteAtMs = SystemClock.elapsedRealtime() + 60L
             Rlog.d(logTag, "Downlink PCM playout started: frameBytes=${buffers.frameBytes} codec=${audioCodec.name}/${audioCodec.sampleRate} gen=$generation")
@@ -56,11 +59,32 @@ object SipDownlinkPcmPlayout {
                     val queuedPcm = buffers.pcmQueue.poll()
                     val pcm =
                         if (queuedPcm != null) {
-                            lastGoodPcmFrame = queuedPcm
+                            realFramesSinceLastUnderrun++
+                            if (
+                                !startupConcealmentPrimed &&
+                                    realFramesSinceLastUnderrun >=
+                                    DOWNLINK_STARTUP_CONCEALMENT_PRIME_FRAMES
+                            ) {
+                                startupConcealmentPrimed = true
+                                Rlog.d(
+                                    logTag,
+                                    "Downlink PCM playout startup concealment primed " +
+                                        "frames=$realFramesSinceLastUnderrun " +
+                                        "queued=${buffers.pcmQueue.size} gen=$generation",
+                                )
+                            }
+                            if (startupConcealmentPrimed) {
+                                lastGoodPcmFrame = queuedPcm
+                            }
                             queuedPcm
                         } else {
+                            realFramesSinceLastUnderrun = 0
                             val last = lastGoodPcmFrame
-                            if (last != null && fillerFrames < DOWNLINK_UNDERRUN_CONCEALMENT_FRAMES) {
+                            if (
+                                startupConcealmentPrimed &&
+                                    last != null &&
+                                    fillerFrames < DOWNLINK_UNDERRUN_CONCEALMENT_FRAMES
+                            ) {
                                 attenuatePcm16LeFrame(
                                     last,
                                     gainShift = (fillerFrames + 2).coerceAtMost(8),
