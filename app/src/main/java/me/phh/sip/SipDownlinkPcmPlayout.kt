@@ -11,6 +11,11 @@ import kotlin.concurrent.thread
 object SipDownlinkPcmPlayout {
     private const val DOWNLINK_UNDERRUN_CONCEALMENT_FRAMES = 6
     private const val DOWNLINK_STARTUP_CONCEALMENT_PRIME_FRAMES = 4
+    private const val DOWNLINK_STARTUP_REBUFFER_FRAMES = 3
+    private const val DOWNLINK_STARTUP_REBUFFER_MAX_SILENCE_FRAMES = 4
+    private const val DOWNLINK_ADAPTIVE_REBUFFER_FRAMES = 2
+    private const val DOWNLINK_ADAPTIVE_REBUFFER_MAX_SILENCE_FRAMES = 4
+    private const val DOWNLINK_ADAPTIVE_REBUFFER_TRIGGER_FRAMES = 12
 
     private fun attenuatePcm16LeFrame(frame: ByteArray, gainShift: Int): ByteArray {
         val out = ByteArray(frame.size)
@@ -47,6 +52,12 @@ object SipDownlinkPcmPlayout {
             var fillerFrames = 0
             var startupConcealmentPrimed = false
             var realFramesSinceLastUnderrun = 0
+            var startupRebuffering = true
+            var startupRebufferPcmSeen = false
+            var startupRebufferWaitFrames = 0
+            var adaptiveRebuffering = false
+            var adaptiveRebufferPcmSeen = false
+            var adaptiveRebufferWaitFrames = 0
             var lastGoodPcmFrame: ByteArray? = null
             var nextWriteAtMs = SystemClock.elapsedRealtime() + 60L
             Rlog.d(logTag, "Downlink PCM playout started: frameBytes=${buffers.frameBytes} codec=${audioCodec.name}/${audioCodec.sampleRate} gen=$generation")
@@ -56,7 +67,60 @@ object SipDownlinkPcmPlayout {
                     val sleepMs = nextWriteAtMs - now
                     if (sleepMs > 0L) Thread.sleep(sleepMs.coerceAtMost(40L))
 
-                    val queuedPcm = buffers.pcmQueue.poll()
+                    val queuedBeforePoll = buffers.pcmQueue.size
+                    if (startupRebuffering && !startupRebufferPcmSeen && queuedBeforePoll > 0) {
+                        startupRebufferPcmSeen = true
+                        Rlog.d(
+                            logTag,
+                            "Downlink PCM playout startup rebuffer first PCM " +
+                                "queued=$queuedBeforePoll gen=$generation",
+                        )
+                    }
+                    if (adaptiveRebuffering && !adaptiveRebufferPcmSeen && queuedBeforePoll > 0) {
+                        adaptiveRebufferPcmSeen = true
+                        Rlog.d(
+                            logTag,
+                            "Downlink PCM playout adaptive rebuffer first PCM " +
+                                "queued=$queuedBeforePoll gen=$generation",
+                        )
+                    }
+
+                    var holdForRebuffer = false
+                    if (startupRebuffering) {
+                        holdForRebuffer = !startupRebufferPcmSeen ||
+                            (queuedBeforePoll < DOWNLINK_STARTUP_REBUFFER_FRAMES &&
+                                startupRebufferWaitFrames <
+                                DOWNLINK_STARTUP_REBUFFER_MAX_SILENCE_FRAMES)
+                        if (holdForRebuffer) {
+                            if (startupRebufferPcmSeen) startupRebufferWaitFrames++
+                        } else {
+                            startupRebuffering = false
+                            Rlog.d(
+                                logTag,
+                                "Downlink PCM playout startup rebuffer complete " +
+                                    "waitFrames=$startupRebufferWaitFrames " +
+                                    "queued=$queuedBeforePoll gen=$generation",
+                            )
+                        }
+                    } else if (adaptiveRebuffering) {
+                        holdForRebuffer = !adaptiveRebufferPcmSeen ||
+                            (queuedBeforePoll < DOWNLINK_ADAPTIVE_REBUFFER_FRAMES &&
+                                adaptiveRebufferWaitFrames <
+                                DOWNLINK_ADAPTIVE_REBUFFER_MAX_SILENCE_FRAMES)
+                        if (holdForRebuffer) {
+                            if (adaptiveRebufferPcmSeen) adaptiveRebufferWaitFrames++
+                        } else {
+                            adaptiveRebuffering = false
+                            Rlog.d(
+                                logTag,
+                                "Downlink PCM playout adaptive rebuffer complete " +
+                                    "waitFrames=$adaptiveRebufferWaitFrames " +
+                                    "queued=$queuedBeforePoll gen=$generation",
+                            )
+                        }
+                    }
+
+                    val queuedPcm = if (holdForRebuffer) null else buffers.pcmQueue.poll()
                     val pcm =
                         if (queuedPcm != null) {
                             realFramesSinceLastUnderrun++
@@ -106,6 +170,25 @@ object SipDownlinkPcmPlayout {
                             }
                         } else if (fillerFrames == 1 || fillerFrames % 50 == 0) {
                             Rlog.d(logTag, "Downlink PCM playout filler frames=$fillerFrames queued=${buffers.pcmQueue.size} gen=$generation")
+                        }
+                        if (
+                            !startupRebuffering &&
+                                !adaptiveRebuffering &&
+                                startupConcealmentPrimed &&
+                                fillerFrames == DOWNLINK_ADAPTIVE_REBUFFER_TRIGGER_FRAMES &&
+                                buffers.pcmQueue.size == 0
+                        ) {
+                            adaptiveRebuffering = true
+                            adaptiveRebufferPcmSeen = false
+                            adaptiveRebufferWaitFrames = 0
+                            startupConcealmentPrimed = false
+                            realFramesSinceLastUnderrun = 0
+                            lastGoodPcmFrame = null
+                            Rlog.d(
+                                logTag,
+                                "Downlink PCM playout adaptive rebuffer start " +
+                                    "afterFillerFrames=$fillerFrames gen=$generation",
+                            )
                         }
                     } else if (fillerFrames > 0) {
                         Rlog.d(logTag, "Downlink PCM playout recovered after fillerFrames=$fillerFrames queued=${buffers.pcmQueue.size} gen=$generation")
