@@ -201,8 +201,11 @@ class PhhMmTelFeature(
     private var outgoingCallListener: ImsCallSessionListener? = null
     private var outgoingCallActive = false
     private var outgoingCallSipCallId: String? = null
+    private var outgoingCallAutoResumeReporter: ((Map<String, String>) -> Unit)? = null
+    private var outgoingCallRemoteHoldReporter: ((Map<String, String>, Boolean) -> Unit)? = null
     private val incomingCallListenersLock = Object()
     private val incomingCallListenersByCallId = mutableMapOf<String, ImsCallSessionListener>()
+    private val incomingCallProfilesByCallId = mutableMapOf<String, ImsCallProfile>()
     private var lastIncomingCallListener: ImsCallSessionListener? = null
 
     fun getSipHandlerOrNull(): SipHandler? {
@@ -216,9 +219,14 @@ class PhhMmTelFeature(
         }
     }
 
-    private fun rememberIncomingCallListener(callId: String, listener: ImsCallSessionListener) {
+    private fun rememberIncomingCallListener(
+        callId: String,
+        listener: ImsCallSessionListener,
+        callProfile: ImsCallProfile,
+    ) {
         synchronized(incomingCallListenersLock) {
             incomingCallListenersByCallId[callId] = listener
+            incomingCallProfilesByCallId[callId] = callProfile
             lastIncomingCallListener = listener
         }
     }
@@ -226,6 +234,7 @@ class PhhMmTelFeature(
     private fun forgetIncomingCallListener(callId: String) {
         synchronized(incomingCallListenersLock) {
             val removed = incomingCallListenersByCallId.remove(callId)
+            incomingCallProfilesByCallId.remove(callId)
             if (removed != null && lastIncomingCallListener == removed) {
                 lastIncomingCallListener = incomingCallListenersByCallId.values.lastOrNull()
             }
@@ -240,6 +249,7 @@ class PhhMmTelFeature(
                 // A non-empty Call-ID is authoritative. Do not fall back to
                 // the last incoming listener on a miss, otherwise an outgoing
                 // foreground termination can wrongly terminate a waiting call.
+                incomingCallProfilesByCallId.remove(normalizedCallId)
                 incomingCallListenersByCallId.remove(normalizedCallId)
             } else {
                 val fallbackListener = lastIncomingCallListener
@@ -247,6 +257,7 @@ class PhhMmTelFeature(
                     .firstOrNull { it.value == fallbackListener }
                     ?.key
                 if (fallbackCallId != null) {
+                    incomingCallProfilesByCallId.remove(fallbackCallId)
                     incomingCallListenersByCallId.remove(fallbackCallId)
                 }
                 fallbackListener
@@ -256,6 +267,16 @@ class PhhMmTelFeature(
                 lastIncomingCallListener = incomingCallListenersByCallId.values.lastOrNull()
             }
             return listener
+        }
+    }
+
+    private fun peekIncomingCallSession(
+        callId: String,
+    ): Pair<ImsCallSessionListener, ImsCallProfile>? {
+        synchronized(incomingCallListenersLock) {
+            val listener = incomingCallListenersByCallId[callId] ?: return null
+            val profile = incomingCallProfilesByCallId[callId] ?: makeVoiceCallProfile()
+            return listener to profile
         }
     }
 
@@ -730,6 +751,61 @@ class PhhMmTelFeature(
                 session.mListener.callSessionProgressing(callProfile.mMediaProfile)
             }
 
+            outgoingCallAutoResumeReporter = { extras ->
+                val resumedProfile = makeVoiceCallProfile(
+                    audioQuality = audioQualityFromSipExtras(extras),
+                )
+                resumedProfile.mMediaProfile.mAudioDirection =
+                    android.telephony.ims.ImsStreamMediaProfile.DIRECTION_SEND_RECEIVE
+                session.currentCallProfile = resumedProfile
+                session.mState = ImsCallSessionImplBase.State.ESTABLISHED
+                val listener = outgoingCallListener
+                if (listener != null) {
+                    Rlog.w(
+                        TAG,
+                        "Reporting outgoing call auto-resumed after waiting call ended: " +
+                            "callId=${extras["call-id"]}",
+                    )
+                    listener.callSessionResumed(resumedProfile)
+                } else {
+                    Rlog.w(TAG, "No outgoing listener while reporting auto-resume: extras=$extras")
+                }
+            }
+
+            outgoingCallRemoteHoldReporter = { extras, held ->
+                val profile = makeVoiceCallProfile(
+                    audioQuality = audioQualityFromSipExtras(extras),
+                )
+                profile.mMediaProfile.mAudioDirection =
+                    if (held) {
+                        android.telephony.ims.ImsStreamMediaProfile.DIRECTION_INACTIVE
+                    } else {
+                        android.telephony.ims.ImsStreamMediaProfile.DIRECTION_SEND_RECEIVE
+                    }
+                session.currentCallProfile = profile
+                session.mState = ImsCallSessionImplBase.State.ESTABLISHED
+                val listener = outgoingCallListener
+                if (listener != null) {
+                    if (held) {
+                        Rlog.w(
+                            TAG,
+                            "Reporting outgoing remote hold received: " +
+                                "callId=${extras["call-id"]}",
+                        )
+                        listener.callSessionHoldReceived(profile)
+                    } else {
+                        Rlog.w(
+                            TAG,
+                            "Reporting outgoing remote resume received: " +
+                                "callId=${extras["call-id"]}",
+                        )
+                        listener.callSessionResumeReceived(profile)
+                    }
+                } else {
+                    Rlog.w(TAG, "No outgoing listener while reporting remote hold state: extras=$extras held=$held")
+                }
+            }
+
         }
     }
 
@@ -915,7 +991,7 @@ sipHandler.imsFailureCallback = {
                 override fun setListener(listener: ImsCallSessionListener) {
                     Rlog.d(TAG, "Setting incoming CallListener for callId=$incomingCallId to $listener")
                     sessionListener = listener
-                    rememberIncomingCallListener(incomingCallId, listener)
+                    rememberIncomingCallListener(incomingCallId, listener, callProfile)
                 }
 
                 override fun getCallId(): String {
@@ -1076,6 +1152,74 @@ sipHandler.imsFailureCallback = {
                 Rlog.w(TAG, "Framework rejected incoming IMS call ${incomingSession.getCallId()}")
             }
         }
+        sipHandler.onHeldForegroundCallAutoResumed = autoResume@{ _: Object, extras: Map<String, String> ->
+            val resumedCallId = extras["call-id"]?.takeIf { it.isNotBlank() }
+            if (resumedCallId == null) {
+                Rlog.w(TAG, "Auto-resumed held call without Call-ID: extras=$extras")
+                return@autoResume
+            }
+
+            if (resumedCallId == outgoingCallSipCallId) {
+                Rlog.w(TAG, "Routing held-call auto-resume to outgoing callId=$resumedCallId")
+                outgoingCallAutoResumeReporter?.invoke(extras) ?: Rlog.w(
+                    TAG,
+                    "No outgoing auto-resume reporter for callId=$resumedCallId extras=$extras",
+                )
+                return@autoResume
+            }
+
+            val incoming = peekIncomingCallSession(resumedCallId)
+            if (incoming != null) {
+                val (listener, profile) = incoming
+                profile.mMediaProfile.mAudioDirection =
+                    android.telephony.ims.ImsStreamMediaProfile.DIRECTION_SEND_RECEIVE
+                Rlog.w(TAG, "Routing held-call auto-resume to incoming callId=$resumedCallId")
+                listener.callSessionResumed(profile)
+            } else {
+                Rlog.w(TAG, "No IMS listener for held-call auto-resume callId=$resumedCallId extras=$extras")
+            }
+        }
+
+        sipHandler.onRemoteCallHoldStateChanged = remoteHoldState@{ _: Object, extras: Map<String, String>, held: Boolean ->
+            val callId = extras["call-id"]?.takeIf { it.isNotBlank() }
+            if (callId == null) {
+                Rlog.w(TAG, "Remote hold state changed without Call-ID: extras=$extras held=$held")
+                return@remoteHoldState
+            }
+
+            if (callId == outgoingCallSipCallId) {
+                Rlog.w(
+                    TAG,
+                    "Routing remote hold state to outgoing callId=$callId held=$held",
+                )
+                outgoingCallRemoteHoldReporter?.invoke(extras, held) ?: Rlog.w(
+                    TAG,
+                    "No outgoing remote-hold reporter for callId=$callId extras=$extras held=$held",
+                )
+                return@remoteHoldState
+            }
+
+            val incoming = peekIncomingCallSession(callId)
+            if (incoming != null) {
+                val (listener, profile) = incoming
+                profile.mMediaProfile.mAudioDirection =
+                    if (held) {
+                        android.telephony.ims.ImsStreamMediaProfile.DIRECTION_INACTIVE
+                    } else {
+                        android.telephony.ims.ImsStreamMediaProfile.DIRECTION_SEND_RECEIVE
+                    }
+                if (held) {
+                    Rlog.w(TAG, "Routing remote hold received to incoming callId=$callId")
+                    listener.callSessionHoldReceived(profile)
+                } else {
+                    Rlog.w(TAG, "Routing remote resume received to incoming callId=$callId")
+                    listener.callSessionResumeReceived(profile)
+                }
+            } else {
+                Rlog.w(TAG, "No IMS listener for remote hold state callId=$callId extras=$extras held=$held")
+            }
+        }
+
         sipHandler.onCancelledCall = { param: Object, reason: String, map: Map<String, String> ->
             Rlog.d(TAG, "Cancelling call")
             val reasonInfo = cancelledReasonInfo(map)
@@ -1087,6 +1231,8 @@ sipHandler.imsFailureCallback = {
                 outgoingCallActive = false
                 outgoingCallSipCallId = null
                 outgoingCallListener = null
+                outgoingCallAutoResumeReporter = null
+                outgoingCallRemoteHoldReporter = null
             } else {
                 val incomingListener = cancelledCallId?.let { takeIncomingCallListener(it) }
                 if (incomingListener != null) {
@@ -1108,6 +1254,8 @@ sipHandler.imsFailureCallback = {
                     outgoingCallActive = false
                     outgoingCallSipCallId = null
                     outgoingCallListener = null
+                    outgoingCallAutoResumeReporter = null
+                    outgoingCallRemoteHoldReporter = null
                 } else {
                     val fallbackIncomingListener = takeIncomingCallListener(null)
                     if (fallbackIncomingListener != null) {

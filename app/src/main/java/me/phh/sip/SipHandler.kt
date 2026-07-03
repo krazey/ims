@@ -470,9 +470,16 @@ private val smsHandler = SipSmsHandler(
     var onIncomingCallConnected: ((handle: Object, extras: Map<String, String>) -> Unit)? =
         null
     var onCancelledCall: ((handle: Object, from: String, extras: Map<String, String>) -> Unit)? =
-        null 
+        null
+    var onHeldForegroundCallAutoResumed: ((handle: Object, extras: Map<String, String>) -> Unit)? =
+        null
+    var onRemoteCallHoldStateChanged: ((
+        handle: Object,
+        extras: Map<String, String>,
+        held: Boolean,
+    ) -> Unit)? = null
 
-    
+
     private fun unregisterImsNetworkCallback(reason: String) {
         val callback = imsNetworkCallback ?: return
 
@@ -513,12 +520,21 @@ private val smsHandler = SipSmsHandler(
         callStarted.set(false)
         threadsStarted.set(false)
 
-        SipAudioModeRestorer.restoreAfterImsCall(
-            logTag = TAG,
-            context = ctxt,
-            reason = "stop runtime: $reason",
-            previousMode = null,
-        )
+        val hasPreservedHeldCall = heldForegroundCall != null
+        if (hasPreservedHeldCall) {
+            Rlog.w(
+                TAG,
+                "Skipping audio mode restore while held foreground call is preserved: " +
+                    "reason=$reason heldCallId=${heldForegroundCall?.callIdOrEmpty()}",
+            )
+        } else {
+            SipAudioModeRestorer.restoreAfterImsCall(
+                logTag = TAG,
+                context = ctxt,
+                reason = "stop runtime: $reason",
+                previousMode = null,
+            )
+        }
         if (reason != "pending waiting INVITE reject") {
             clearPendingWaitingInvite(reason = "call runtime stopped: $reason")
         }
@@ -3057,6 +3073,50 @@ fun onWfcDisabled(reason: String) {
     }
 
 
+    private fun resumeHeldForegroundAfterCurrentCallEnded(
+        held: Call,
+        endedCallId: String,
+        reason: String,
+    ) {
+        val heldCallId = held.callIdOrEmpty()
+        if (heldCallId.isBlank()) {
+            Rlog.w(TAG, "Cannot auto-resume held foreground call without Call-ID after $reason")
+            return
+        }
+
+        Rlog.w(
+            TAG,
+            "Auto-resuming held foreground call after current call ended: " +
+                "heldCallId=$heldCallId endedCallId=$endedCallId reason=$reason",
+        )
+        pendingSwapHeldActiveCall = null
+        if (!sendResumeReinviteForHeldCall(held) { success ->
+                if (success) {
+                    val extras = mapOf("call-id" to heldCallId) +
+                        SipAudioCodecNegotiator.audioCodecExtras(held.audioCodec)
+                    Rlog.w(
+                        TAG,
+                        "Held foreground call auto-resumed after current call ended: " +
+                            "heldCallId=$heldCallId endedCallId=$endedCallId",
+                    )
+                    onHeldForegroundCallAutoResumed?.invoke(Object(), extras)
+                } else {
+                    Rlog.w(
+                        TAG,
+                        "Held foreground auto-resume failed after current call ended: " +
+                            "heldCallId=$heldCallId endedCallId=$endedCallId",
+                    )
+                }
+            }) {
+            Rlog.w(
+                TAG,
+                "Could not send auto-resume re-INVITE after current call ended: " +
+                    "heldCallId=$heldCallId endedCallId=$endedCallId",
+            )
+        }
+    }
+
+
     private fun handleRemoteDialogTerminationAfterCleanup(
         request: SipRequest,
         callId: String,
@@ -3069,6 +3129,7 @@ fun onWfcDisabled(reason: String) {
         val remoteMethodReason = SipRemoteDialogTermination.remoteMethodReason(request.method)
         if (currentCall?.outgoing == false) rememberTerminatedIncomingCall(callId, remoteMethodReason)
         val terminatedCall = currentCall
+        val heldToResume = heldForegroundCall?.takeIf { terminatedCall != null && isBye }
         currentCall = null
         clearPendingOutgoingInvite(callId, closeRtpSocket = false, reason = remoteMethodReason)
         val cancelExtras = SipRemoteDialogTermination.remoteEndExtras(
@@ -3079,6 +3140,13 @@ fun onWfcDisabled(reason: String) {
             outgoingConnectedNotified = terminatedCall?.outgoingConnectedNotified?.get() == true,
         )
         onCancelledCall?.invoke(Object(), "", cancelExtras)
+        if (heldToResume != null) {
+            resumeHeldForegroundAfterCurrentCallEnded(
+                held = heldToResume,
+                endedCallId = callId,
+                reason = remoteMethodReason,
+            )
+        }
         return 200
     }
 
@@ -5609,6 +5677,60 @@ fun onWfcDisabled(reason: String) {
     private val rtpDtmfTimestampSamples = AtomicInteger(0)
 
     private val prAckWaitTracker = PrackWaitTracker()
+    private val remoteHeldCallIdsLock = Object()
+    private val remoteHeldCallIds = mutableSetOf<String>()
+
+
+    private fun remoteAudioDirection(attributes: List<String>): String? =
+        attributes.firstOrNull {
+            it == "sendrecv" || it == "sendonly" ||
+                it == "recvonly" || it == "inactive"
+        }
+
+
+    private fun maybeReportRemoteHoldState(
+        callId: String,
+        remoteDirection: String?,
+        audioCodec: NegotiatedAudioCodec,
+    ) {
+        val held = when (remoteDirection) {
+            "sendonly", "inactive" -> true
+            "sendrecv", "recvonly" -> false
+            else -> return
+        }
+
+        val changed = synchronized(remoteHeldCallIdsLock) {
+            if (held) {
+                remoteHeldCallIds.add(callId)
+            } else {
+                remoteHeldCallIds.remove(callId)
+            }
+        }
+        if (!changed) {
+            Rlog.d(
+                TAG,
+                "Remote hold state unchanged from in-dialog INVITE: " +
+                    "callId=$callId direction=$remoteDirection held=$held",
+            )
+            return
+        }
+
+        val extras = mapOf(
+            "call-id" to callId,
+            "remote-direction" to remoteDirection.orEmpty(),
+        ) + SipAudioCodecNegotiator.audioCodecExtras(audioCodec)
+        Rlog.w(
+            TAG,
+            if (held) {
+                "Remote hold received from in-dialog INVITE: " +
+                    "callId=$callId direction=$remoteDirection"
+            } else {
+                "Remote resume received from in-dialog INVITE: " +
+                    "callId=$callId direction=$remoteDirection"
+            },
+        )
+        onRemoteCallHoldStateChanged?.invoke(Object(), extras, held)
+    }
 
 
     private fun updateDialogCallFromInDialogInviteSdp(
@@ -5685,6 +5807,7 @@ fun onWfcDisabled(reason: String) {
         val rtpRemoteAddr = offer.rtpRemoteAddr
         val rtpRemotePort = offer.rtpRemotePort
         val attributes = offer.attributes
+        val remoteDirection = remoteAudioDirection(attributes)
 
         val mediaSelection = SipInDialogInvite.selectMedia(
             attributes = attributes,
@@ -5745,6 +5868,11 @@ fun onWfcDisabled(reason: String) {
         SipInDialogInvite.writeOkResponse(
             responseWriter = responseWriter,
             response = response,
+        )
+        maybeReportRemoteHoldState(
+            callId = callId,
+            remoteDirection = remoteDirection,
+            audioCodec = selectedAudioCodec,
         )
         return 0
     }
@@ -6182,7 +6310,6 @@ fun onWfcDisabled(reason: String) {
         )
     }
 
-
     private fun buildCallWaitingHoldSdp(call: Call, holdDirection: String = "sendonly"): ByteArray =
         SipCallWaitingHoldSdp.build(
             call = call,
@@ -6192,6 +6319,28 @@ fun onWfcDisabled(reason: String) {
             holdDirection = holdDirection,
         )
 
+    private fun pauseCurrentCallMediaForLocalHold(call: Call, reason: String) {
+        val callId = call.callIdOrEmpty()
+        val activeCallId = currentCall?.callIdOrEmpty()
+        if (activeCallId != callId) {
+            Rlog.w(
+                TAG,
+                "Not pausing media for local hold because current call changed: " +
+                    "requestedCallId=$callId currentCallId=$activeCallId reason=$reason",
+            )
+            return
+        }
+
+        val generation = callGeneration.incrementAndGet()
+        callStopped.set(true)
+        callStarted.set(false)
+        threadsStarted.set(false)
+        Rlog.w(
+            TAG,
+            "Paused current call media for local hold: " +
+                "callId=$callId reason=$reason generation=$generation",
+        )
+    }
 
     private fun sendAckForLocalReinvite2xx(
         call: Call,
@@ -6259,6 +6408,10 @@ fun onWfcDisabled(reason: String) {
                         inviteCseqNumber = inviteCseq,
                         requestHeaders = headers,
                         label = "call-waiting hold re-INVITE",
+                    )
+                    pauseCurrentCallMediaForLocalHold(
+                        call = call,
+                        reason = "local hold re-INVITE accepted",
                     )
                     onComplete(true)
                     true

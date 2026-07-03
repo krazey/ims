@@ -130,6 +130,17 @@ internal object SipInDialogInvite {
                 return preferredMatch
             }
 
+            val remappedMatch = matches.firstOrNull()
+            if (remappedMatch != null) {
+                Rlog.w(
+                    logTag,
+                    "In-dialog INVITE remapped $codec payload " +
+                        "from negotiated track=$preferredTrack to track=${remappedMatch.first} " +
+                        "match=$remappedMatch",
+                )
+                return remappedMatch
+            }
+
             Rlog.w(
                 logTag,
                 "In-dialog INVITE did not offer negotiated $codec payload " +
