@@ -9,6 +9,7 @@ internal data class IncomingInviteDialogSetupState(
     val reliableSequence: Int,
     val sdp: ByteArray,
     val headers: Map<String, List<String>>,
+    val plainRingingAlreadySent: Boolean = false,
 )
 
 internal data class IncomingInviteRejectDecision(

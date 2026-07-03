@@ -7079,6 +7079,7 @@ fun onWfcDisabled(reason: String) {
         reliableSequence: Int,
         headers: Map<String, List<String>>,
         sdp: ByteArray,
+        plainRingingAlreadySent: Boolean,
     ) {
         if (sendReliable183) {
             prAckWaitTracker.add(reliableSequence)
@@ -7089,6 +7090,8 @@ fun onWfcDisabled(reason: String) {
             Rlog.d(TAG, SipIncomingInviteRequestFlowLogs.reliableIncoming183Log(msg))
             writeSipBytesWithFlush(incomingResponseWriter, "SipHandler msg", msg.toByteArray())
             waitPrack(reliableSequence)
+        } else if (plainRingingAlreadySent) {
+            Rlog.d(TAG, "Skipping delayed 180 Ringing; fast 180 already sent")
         } else {
             val msg2 = SipIncomingInviteDialogSetup.plainRingingResponse(headers)
             Rlog.d(TAG, SipIncomingInviteRequestFlowLogs.plainIncoming180Log(msg2))
@@ -7101,13 +7104,16 @@ fun onWfcDisabled(reason: String) {
         request: SipRequest,
         incomingCallId: String,
         incomingOffer: IncomingInviteOffer,
+        localToTag: String? = null,
+        reliableSequence: Int? = null,
+        plainRingingAlreadySent: Boolean = false,
     ): IncomingInviteDialogSetupState? {
         val rtpRemoteAddr = incomingOffer.rtpRemoteAddr
         val rtpRemotePort = incomingOffer.rtpRemotePort
         val owner = incomingOffer.owner
+        val resolvedLocalToTag = localToTag ?: randomBytes(6).toHex()
+        val resolvedReliableSequence = reliableSequence ?: reliableSequenceCounter++
 
-        // Need to sleep a bit so that our 100 Trying is sent first. Kinda weird.
-        Thread.sleep(500)
         val rtpSocket = createIncomingInviteRtpSocket(
             rtpRemoteAddr = rtpRemoteAddr,
             rtpRemotePort = rtpRemotePort,
@@ -7125,11 +7131,70 @@ fun onWfcDisabled(reason: String) {
             rtpSocket = rtpSocket,
             dialogContact = dialogContact,
             commonHeaders = commonHeaders,
-            reliableSequence = reliableSequenceCounter++,
-            localToTag = randomBytes(6).toHex(),
+            reliableSequence = resolvedReliableSequence,
+            localToTag = resolvedLocalToTag,
             localAddr = socket.gLocalAddr(),
             logTag = TAG,
+        ).copy(plainRingingAlreadySent = plainRingingAlreadySent)
+    }
+
+
+    private fun fastIncomingInviteRingingHeaders(
+        request: SipRequest,
+        incomingCallId: String,
+        incomingOffer: IncomingInviteOffer,
+        localToTag: String,
+        reliableSequence: Int,
+    ): SipHeadersMap {
+        val dialogContact = incomingInviteDialogContact(
+            request = request,
+            owner = incomingOffer.owner,
+            incomingCallId = incomingCallId,
         )
+        val toWithTag = SipIncomingInviteToHeaderTagger.tag(
+            request = request,
+            localToTag = localToTag,
+            logTag = TAG,
+        )
+
+        return SipIncomingInviteProvisionalHeaders.build(
+            request = request,
+            commonHeaders = commonHeaders,
+            dialogContact = dialogContact,
+            callerSupportsPrecondition = incomingOffer.callerSupportsPrecondition,
+            reliableSequence = reliableSequence,
+            toWithTag = toWithTag,
+        )
+    }
+
+
+    private fun sendFastPlainRingingForIncomingInvite(
+        request: SipRequest,
+        incomingCallId: String,
+        incomingResponseWriter: OutputStream,
+        incomingOffer: IncomingInviteOffer,
+        localToTag: String,
+        reliableSequence: Int,
+    ): Boolean {
+        val headers = fastIncomingInviteRingingHeaders(
+            request = request,
+            incomingCallId = incomingCallId,
+            incomingOffer = incomingOffer,
+            localToTag = localToTag,
+            reliableSequence = reliableSequence,
+        )
+        val ringing = SipIncomingInviteDialogSetup.plainRingingResponse(headers)
+        Rlog.w(
+            TAG,
+            "Sending fast 180 Ringing before async incoming setup: " +
+                "callId=$incomingCallId sendReliable183=${incomingOffer.sendReliable183}",
+        )
+        writeSipBytesWithFlush(
+            incomingResponseWriter,
+            "fast incoming 180 Ringing callId=$incomingCallId",
+            ringing.toByteArray(),
+        )
+        return true
     }
 
 
@@ -7165,6 +7230,7 @@ fun onWfcDisabled(reason: String) {
             reliableSequence = setupState.reliableSequence,
             headers = setupState.headers,
             sdp = setupState.sdp,
+            plainRingingAlreadySent = setupState.plainRingingAlreadySent,
         )
     }
 
@@ -7173,11 +7239,17 @@ fun onWfcDisabled(reason: String) {
         incomingCallId: String,
         incomingResponseWriter: OutputStream,
         incomingOffer: IncomingInviteOffer,
+        localToTag: String,
+        reliableSequence: Int,
+        plainRingingAlreadySent: Boolean,
     ) {
         val incomingInviteDialogSetupState = prepareIncomingInviteDialogSetupState(
             request = request,
             incomingCallId = incomingCallId,
             incomingOffer = incomingOffer,
+            localToTag = localToTag,
+            reliableSequence = reliableSequence,
+            plainRingingAlreadySent = plainRingingAlreadySent,
         ) ?: return
 
         if (abortIncomingCallSetupIfTerminated(
@@ -7200,6 +7272,9 @@ fun onWfcDisabled(reason: String) {
         incomingCallId: String,
         incomingResponseWriter: OutputStream,
         incomingOffer: IncomingInviteOffer,
+        localToTag: String,
+        reliableSequence: Int,
+        plainRingingAlreadySent: Boolean,
     ) {
         thread {
             runIncomingInviteDialogSetup(
@@ -7207,6 +7282,9 @@ fun onWfcDisabled(reason: String) {
                 incomingCallId = incomingCallId,
                 incomingResponseWriter = incomingResponseWriter,
                 incomingOffer = incomingOffer,
+                localToTag = localToTag,
+                reliableSequence = reliableSequence,
+                plainRingingAlreadySent = plainRingingAlreadySent,
             )
         }
     }
@@ -7272,12 +7350,25 @@ fun onWfcDisabled(reason: String) {
             request = request,
             incomingResponseWriter = incomingResponseWriter,
         )
+        val incomingLocalToTag = randomBytes(6).toHex()
+        val incomingReliableSequence = reliableSequenceCounter++
+        val fastPlainRingingSent = sendFastPlainRingingForIncomingInvite(
+            request = request,
+            incomingCallId = incomingCallId,
+            incomingResponseWriter = incomingResponseWriter,
+            incomingOffer = incomingOffer,
+            localToTag = incomingLocalToTag,
+            reliableSequence = incomingReliableSequence,
+        )
 
         startIncomingInviteDialogSetup(
             request = request,
             incomingCallId = incomingCallId,
             incomingResponseWriter = incomingResponseWriter,
             incomingOffer = incomingOffer,
+            localToTag = incomingLocalToTag,
+            reliableSequence = incomingReliableSequence,
+            plainRingingAlreadySent = fastPlainRingingSent,
         )
 
         // Do not let parseMessage auto-generate a 100 Trying with a different To-tag.
