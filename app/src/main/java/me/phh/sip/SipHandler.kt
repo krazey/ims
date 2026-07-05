@@ -973,10 +973,26 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
             lowerReason.contains("connect/register failed")) {
             return false
         }
-        if (!lowerReason.contains("sip socket lost") &&
-            !lowerReason.contains("sip transport lost")) {
+        val transientSipReconnect =
+            lowerReason.contains("sip socket lost") ||
+                lowerReason.contains("sip transport lost")
+        val imsAccessTechOnlyHandover =
+            lowerReason.contains("ims link changed") &&
+                lowerReason.contains("techchanged=true") &&
+                lowerReason.contains("networkchanged=false") &&
+                lowerReason.contains("localchanged=false") &&
+                lowerReason.contains("pcscfchanged=false")
+
+        if (!transientSipReconnect && !imsAccessTechOnlyHandover) {
             return false
         }
+
+        val stableFrameworkRegistrationReason =
+            if (imsAccessTechOnlyHandover) {
+                "IMS access tech-only handover"
+            } else {
+                "transient SIP reconnect"
+            }
 
         val lp = try {
             connectivityManager.getLinkProperties(network)
@@ -990,7 +1006,7 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
 
         Rlog.w(
             TAG,
-            "Keeping framework IMS registration stable during transient SIP reconnect: " +
+            "Keeping framework IMS registration stable during $stableFrameworkRegistrationReason: " +
                 "$reason network=$network local=${getImsLocalAddress(lp)?.hostAddress} " +
                 "pcscfs=${getPcscfServers(lp).map { it.hostAddress }}",
         )
