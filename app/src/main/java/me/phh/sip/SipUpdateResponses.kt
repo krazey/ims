@@ -24,10 +24,17 @@ internal object SipUpdateDialogValidator {
 }
 
 internal object SipUpdateResponseBuilder {
+    private const val TAG = "PHH SipUpdate"
+
     fun okWithoutSdp(
         request: SipRequest,
         requestCallId: String,
     ): SipResponse {
+        val sessionTimerHeaders =
+            SipSessionTimerNegotiation.responseHeadersForIncomingRequest(
+                requestHeaders = request.headers,
+                logTag = TAG,
+            )
         return SipResponse(
             statusCode = 200,
             statusString = "OK",
@@ -37,7 +44,8 @@ internal object SipUpdateResponseBuilder {
                 Supported: 100rel, replaces, timer
                 Call-ID: $requestCallId
                 Content-Length: 0
-            """.toSipHeadersMap(),
+            """.toSipHeadersMap() +
+                sessionTimerHeaders,
             autofill = false,
         )
     }
@@ -47,6 +55,11 @@ internal object SipUpdateResponseBuilder {
         callId: String,
         answerSdp: ByteArray,
     ): SipResponse {
+        val sessionTimerHeaders =
+            SipSessionTimerNegotiation.responseHeadersForIncomingRequest(
+                requestHeaders = request.headers,
+                logTag = TAG,
+            )
         return SipResponse(
             statusCode = 200,
             statusString = "OK",
@@ -57,7 +70,8 @@ internal object SipUpdateResponseBuilder {
                 Supported: 100rel, replaces, timer
                 Require: precondition
                 Call-ID: $callId
-            """.toSipHeadersMap(),
+            """.toSipHeadersMap() +
+                sessionTimerHeaders,
             body = answerSdp,
         )
     }
