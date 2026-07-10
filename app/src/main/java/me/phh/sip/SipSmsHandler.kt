@@ -19,7 +19,9 @@ internal class SipSmsHandler(
     private val mySipProvider: () -> String,
     private val writerProvider: () -> OutputStream,
     private val responseCallbackSetter: (String, (SipResponse) -> Boolean) -> Unit,
+    private val responseCallbackRemover: (String) -> Unit,
     private val smsSipFailureListener: (String, Int) -> Unit = { _, _ -> },
+    private val sipWriteFailureListener: (String) -> Unit,
     private val timeoutScheduler: (Long, () -> Unit) -> Unit,
 ) {
     var onSmsReceived: ((Int, String, ByteArray) -> Unit)? = null
@@ -146,6 +148,26 @@ internal class SipSmsHandler(
         }
     }
 
+    private fun failPendingOutgoingSmsForWriteFailure(callId: String, reason: String) {
+        val pending = smsLock.withLock {
+            pendingOutgoingSmsByCallId.remove(callId)?.also {
+                pendingOutgoingSmsByRef.remove(it.ref)
+            }
+        } ?: return
+
+        Rlog.w(
+            tag,
+            "Outgoing SMS SIP write failed before RP result: " +
+                "reason=$reason ref=${pending.ref} callId=$callId",
+        )
+
+        try {
+            pending.failCb()
+        } catch (t: Throwable) {
+            Rlog.d(tag, "Failed reporting outgoing SMS write failure", t)
+        }
+    }
+
     fun clearState() {
         smsLock.withLock {
             smsHeadersMap.clear()
@@ -220,14 +242,14 @@ internal class SipSmsHandler(
         writer: java.io.OutputStream,
         label: String,
         bytes: ByteArray,
-    ) {
-        if (SipMessageWriter.write(
-                tag = tag,
-                writer = writer,
-                bytes = bytes,
-                label = label,
-            )
-        ) {
+    ): Boolean {
+        val written = SipMessageWriter.write(
+            tag = tag,
+            writer = writer,
+            bytes = bytes,
+            label = label,
+        )
+        if (written) {
             val firstLine = bytes
                 .toString(Charsets.US_ASCII)
                 .lineSequence()
@@ -238,6 +260,7 @@ internal class SipSmsHandler(
                 "SIP SMS write complete label=$label bytes=${bytes.size} firstLine=$firstLine",
             )
         }
+        return written
     }
 
     fun sendSms(
@@ -408,7 +431,12 @@ internal class SipSmsHandler(
 
         Rlog.d(tag, "Sending $msg")
         val writer = writerProvider()
-        writeSmsSipBytesWithFlush(writer, "SipSmsHandler msg ref=$ref requestUri=$requestUri dest=$dest", msg.toByteArray())
+        val writeLabel = "outgoing SMS MESSAGE ref=$ref requestUri=$requestUri dest=$dest"
+        if (!writeSmsSipBytesWithFlush(writer, writeLabel, msg.toByteArray())) {
+            responseCallbackRemover(callId)
+            failPendingOutgoingSmsForWriteFailure(callId, writeLabel)
+            sipWriteFailureListener(writeLabel)
+        }
     }
 
     fun sendSmsAck(token: Int, ref: Int, error: Boolean) {
@@ -439,11 +467,16 @@ internal class SipSmsHandler(
         )
 
         // Ignore response.
-        responseCallbackSetter(msg.headers["call-id"]!![0]) { true }
+        val callId = msg.headers["call-id"]!![0]
+        responseCallbackSetter(callId) { true }
 
         Rlog.d(tag, "Sending $msg")
         val writer = writerProvider()
-        writeSmsSipBytesWithFlush(writer, "SipSmsHandler ack ref=$ref", msg.toByteArray())
+        val writeLabel = "outgoing SMS ACK ref=$ref"
+        if (!writeSmsSipBytesWithFlush(writer, writeLabel, msg.toByteArray())) {
+            responseCallbackRemover(callId)
+            sipWriteFailureListener(writeLabel)
+        }
     }
 
     private fun normalizeSipTarget(raw: String): String =

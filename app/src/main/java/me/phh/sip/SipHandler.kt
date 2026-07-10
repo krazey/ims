@@ -453,7 +453,9 @@ private val smsHandler = SipSmsHandler(
         mySipProvider = { mySip },
         writerProvider = { socket.gWriter() },
         responseCallbackSetter = { callId, cb -> setResponseCallback(callId, cb) },
+        responseCallbackRemover = { callId -> removeResponseCallback(callId) },
         smsSipFailureListener = { smsRealm, statusCode -> smsFallbackPolicy.learnFromSipMessageFailure(smsRealm, statusCode) },
+        sipWriteFailureListener = { reason -> reconnectIms(reason) },
         timeoutScheduler = { delayMs, action -> myHandler.postDelayed({ action() }, delayMs) },
     )
 
