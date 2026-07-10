@@ -2949,6 +2949,20 @@ fun onWfcDisabled(reason: String) {
         }
 
         val updateResponseWriter = updateResponseWriterFor(request)
+        SipSessionTimerNegotiation.rejectionResponseForIncomingRequest(
+            request = request,
+            logTag = TAG,
+        )?.let { response ->
+            if (!writeSipBytesWithFlush(
+                    updateResponseWriter,
+                    "UPDATE 422 session timer response",
+                    response.toByteArray(),
+                )
+            ) {
+                reconnectIms("UPDATE 422 session timer response write failed")
+            }
+            return 0
+        }
 
         val isSdp = SipUpdateDialogValidator.isSdpUpdate(request)
 
@@ -7741,6 +7755,20 @@ fun onWfcDisabled(reason: String) {
             request = request,
         )?.let { return it }
         val incomingResponseWriter = dispatcher.writerForCallId(incomingCallId) ?: socket.gWriter()
+        SipSessionTimerNegotiation.rejectionResponseForIncomingRequest(
+            request = request,
+            logTag = TAG,
+        )?.let { response ->
+            if (!writeSipBytesWithFlush(
+                    incomingResponseWriter,
+                    "INVITE 422 session timer response",
+                    response.toByteArray(),
+                )
+            ) {
+                reconnectIms("INVITE 422 session timer response write failed")
+            }
+            return 0
+        }
         val activeCall = currentCall
         val existingCall = callForIncomingInviteDialog(incomingCallId)
         val isInDialogInvite = existingCall != null &&

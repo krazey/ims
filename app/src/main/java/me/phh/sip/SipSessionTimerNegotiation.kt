@@ -16,11 +16,49 @@ internal object SipSessionTimerNegotiation {
     fun outgoingRequestValue(intervalSeconds: Int): String =
         "${intervalSeconds.coerceAtLeast(MIN_INTERVAL_SECONDS)};refresher=uas"
 
+    fun rejectionResponseForIncomingRequest(
+        request: SipRequest,
+        logTag: String,
+    ): SipResponse? {
+        val rawSessionExpires = sessionExpiresHeader(request.headers) ?: return null
+        val interval = rawSessionExpires
+            .substringBefore(';')
+            .trim()
+            .toIntOrNull()
+            ?: return null
+        if (interval >= MIN_INTERVAL_SECONDS) return null
+
+        Rlog.w(
+            logTag,
+            "Rejecting Session-Expires below minimum: " +
+                "value=$rawSessionExpires minimum=$MIN_INTERVAL_SECONDS",
+        )
+        val responseHeaders = request.headers.filter { (name, _) ->
+            name in setOf("cseq", "via", "from", "to", "call-id")
+        }.toMutableMap()
+        request.headers["to"]?.let { toHeaders ->
+            val localTag = randomBytes(6).toHex()
+            responseHeaders["to"] = toHeaders.map { header ->
+                if (header.contains(";tag=", ignoreCase = true)) {
+                    header
+                } else {
+                    SipHeaderTagger.addTag(header, localTag)
+                }
+            }
+        }
+        responseHeaders["min-se"] = listOf(MIN_INTERVAL_SECONDS.toString())
+        return SipResponse(
+            statusCode = 422,
+            statusString = "Session Interval Too Small",
+            headersParam = responseHeaders,
+        )
+    }
+
     fun responseHeadersForIncomingRequest(
         requestHeaders: SipHeadersMap,
         logTag: String,
     ): SipHeadersMap {
-        val rawSessionExpires = firstHeader(requestHeaders, "session-expires")
+        val rawSessionExpires = sessionExpiresHeader(requestHeaders)
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?: return emptyMap()
@@ -34,7 +72,11 @@ internal object SipSessionTimerNegotiation {
                 return emptyMap()
             }
         val requestedRefresher = parameter(rawSessionExpires, "refresher")
-        val peerSupportsTimer = headerContainsToken(requestHeaders, "supported", "timer")
+        val peerSupportsTimer = headerContainsToken(
+            headers = requestHeaders,
+            names = listOf("supported", "k"),
+            token = "timer",
+        )
         val responseRefresher = when {
             requestedRefresher == "uac" -> "uac"
             requestedRefresher == "uas" -> "uas"
@@ -71,19 +113,28 @@ internal object SipSessionTimerNegotiation {
             ?.lowercase()
             ?.takeIf { it.isNotEmpty() }
 
+    private fun sessionExpiresHeader(headers: SipHeadersMap): String? =
+        firstHeaders(headers, listOf("session-expires", "x")).firstOrNull()
+
     private fun headerContainsToken(
         headers: SipHeadersMap,
-        name: String,
+        names: List<String>,
         token: String,
-    ): Boolean = firstHeaders(headers, name)
+    ): Boolean = firstHeaders(headers, names)
         .flatMap { it.split(',') }
         .any { it.trim().equals(token, ignoreCase = true) }
 
-    private fun firstHeader(headers: SipHeadersMap, name: String): String? =
-        firstHeaders(headers, name).firstOrNull()
-
-    private fun firstHeaders(headers: SipHeadersMap, name: String): List<String> =
-        headers[name]
-            ?: headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
-            ?: emptyList()
+    private fun firstHeaders(
+        headers: SipHeadersMap,
+        names: List<String>,
+    ): List<String> {
+        for (name in names) {
+            headers[name]?.let { return it }
+            headers.entries
+                .firstOrNull { it.key.equals(name, ignoreCase = true) }
+                ?.value
+                ?.let { return it }
+        }
+        return emptyList()
+    }
 }
