@@ -27,6 +27,7 @@ internal class SipSessionRefresher(
         (SipResponse) -> Boolean,
     ) -> Unit,
     private val responseCallbackRemover: (String, Int, SipMethod) -> Unit,
+    private val terminateDialog: (String, String) -> Unit,
     private val reconnectIms: (String) -> Unit,
 ) {
     companion object {
@@ -207,6 +208,13 @@ internal class SipSessionRefresher(
                 }
                 true
             }
+            408, 481 -> {
+                terminateAfterRefreshFailure(
+                    callId = callId,
+                    reason = "failed ${response.statusCode}",
+                )
+                true
+            }
             422 -> {
                 val interval = maxOf(
                     state.intervalSeconds,
@@ -214,11 +222,11 @@ internal class SipSessionRefresher(
                         response.headers,
                     ) ?: state.intervalSeconds,
                 )
-                retryOrRecover(callId, state, interval, "rejected with 422")
+                retryOrTerminate(callId, state, interval, "rejected with 422")
                 true
             }
             else -> {
-                retryOrRecover(
+                retryOrTerminate(
                     callId,
                     state,
                     state.intervalSeconds,
@@ -234,10 +242,10 @@ internal class SipSessionRefresher(
         state.cseqNumber?.let { cseq ->
             responseCallbackRemover(callId, cseq, SipMethod.UPDATE)
         }
-        retryOrRecover(callId, state, state.intervalSeconds, "response timeout")
+        terminateAfterRefreshFailure(callId, "response timeout")
     }
 
-    private fun retryOrRecover(
+    private fun retryOrTerminate(
         callId: String,
         state: State,
         intervalSeconds: Int,
@@ -252,8 +260,13 @@ internal class SipSessionRefresher(
             )
             return
         }
-        cancel(callId, "session refresh $reason")
-        reconnectIms("session refresh $reason")
+        terminateAfterRefreshFailure(callId, reason)
+    }
+
+    private fun terminateAfterRefreshFailure(callId: String, reason: String) {
+        val terminationReason = "session refresh $reason"
+        cancel(callId, terminationReason)
+        terminateDialog(callId, terminationReason)
     }
 
     private fun currentState(callId: String, generation: Int): State? =

@@ -473,6 +473,16 @@ private val smsHandler = SipSmsHandler(
         responseCallbackRemover = { callId, cseqNumber, method ->
             removeResponseCallback(callId, cseqNumber, method)
         },
+        terminateDialog = { callId, reason ->
+            myHandler.post {
+                Rlog.w(
+                    TAG,
+                    "Terminating dialog after session refresh failure: " +
+                        "callId=$callId reason=$reason",
+                )
+                terminateCall(callId)
+            }
+        },
         reconnectIms = { reason -> reconnectIms(reason) },
     )
 
