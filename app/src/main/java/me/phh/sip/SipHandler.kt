@@ -561,6 +561,10 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         dispatcher.setResponseCallback(callId, cb)
     }
 
+    private fun removeResponseCallback(callId: String) {
+        dispatcher.removeResponseCallback(callId)
+    }
+
     fun parseMessage(reader: SipReader, writer: OutputStream): Boolean {
         return dispatcher.parseMessage(reader, writer)
     }
@@ -877,19 +881,29 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         )
     }
 
+    private val outgoingCallSetupInProgress = AtomicBoolean(false)
+    private val outgoingCallSetupFailureReported = AtomicBoolean(false)
+
     private fun outgoingCallSetupFailureForImsNetworkLoss(): Map<String, String>? {
         val callId = pendingOutgoingInvite?.callId
             ?: currentCall
                 ?.takeIf { it.outgoing && !callStarted.get() }
                 ?.callIdOrNull()
-            ?: return null
+        if (callId == null && !outgoingCallSetupInProgress.get()) {
+            return null
+        }
+        if (!outgoingCallSetupFailureReported.compareAndSet(false, true)) {
+            return null
+        }
 
-        return mapOf(
-            "call-id" to callId,
+        outgoingCallSetupInProgress.set(false)
+        val extras = mutableMapOf(
             "callStartFailed" to "true",
             "csRetry" to "true",
             "statusString" to "IMS bearer lost during outgoing call setup",
         )
+        callId?.let { extras["call-id"] = it }
+        return extras
     }
 
     private fun clearCallAndCallbackStateForReconnect() {
@@ -4422,30 +4436,102 @@ fun onWfcDisabled(reason: String) {
     private fun useSingTelStockOutgoingPolicy(): Boolean =
         carrierSettings.useSingTelStockPolicy(realm, registerTargetRealm)
 
+    private fun closeOutgoingSetupRtpSocket(
+        rtpSocket: DatagramSocket?,
+        reason: String,
+    ) {
+        if (rtpSocket == null || rtpSocket.isClosed) return
+
+        try {
+            rtpSocket.close()
+        } catch (closeError: Throwable) {
+            Rlog.d(TAG, "Closing outgoing RTP socket failed: $reason", closeError)
+        }
+    }
+
+    private fun failOutgoingCallSetup(
+        statusString: String,
+        logReason: String,
+        error: Throwable? = null,
+        rtpSocket: DatagramSocket? = null,
+        reconnectReason: String? = null,
+        localImsAddressStale: Boolean = false,
+    ) {
+        if (!outgoingCallSetupFailureReported.compareAndSet(false, true)) {
+            closeOutgoingSetupRtpSocket(rtpSocket, "duplicate failure: $logReason")
+            Rlog.d(TAG, "Ignoring duplicate outgoing setup failure: $logReason")
+            return
+        }
+
+        if (error != null) {
+            Rlog.e(TAG, "Outgoing call setup failed: $logReason", error)
+        } else {
+            Rlog.e(TAG, "Outgoing call setup failed: $logReason")
+        }
+
+        outgoingCallSetupInProgress.set(false)
+        stopCallRuntime("outgoing setup failure: $logReason")
+        callGeneration.incrementAndGet()
+
+        val pending = pendingOutgoingInvite
+        val pendingCallId = pending?.callId
+        val failedRtpSocket = rtpSocket ?: pending?.rtpSocket
+        pendingCallId?.let { removeResponseCallback(it) }
+
+        if (failedRtpSocket != null && currentCall?.rtpSocket === failedRtpSocket) {
+            currentCall = null
+        }
+        clearPendingOutgoingInvite(
+            callId = pendingCallId,
+            closeRtpSocket = true,
+            reason = "outgoing setup failure: $logReason",
+        )
+        closeOutgoingSetupRtpSocket(failedRtpSocket, logReason)
+
+        val extras = mutableMapOf(
+            "statusCode" to "480",
+            "statusString" to statusString,
+            "callStartFailed" to "true",
+            "csRetry" to "true",
+        )
+        pendingCallId?.let { extras["call-id"] = it }
+        if (localImsAddressStale) {
+            extras["localImsAddressStale"] = "true"
+        }
+        try {
+            onCancelledCall?.invoke(Object(), logReason, extras)
+        } finally {
+            reconnectReason?.let { reconnectIms(it) }
+        }
+    }
+
     private fun createOutgoingCallRtpSocket(): DatagramSocket? {
         val rtpSocket = try {
             DatagramSocket(0, localAddr)
-        } catch (t: Throwable) {
-            val staleReason = "outgoing RTP bind failed for localAddr=$localAddr"
-            Rlog.e(TAG, "Failed to bind outgoing RTP socket to $localAddr; IMS address is likely stale", t)
-            reconnectIms(staleReason)
-            onCancelledCall?.invoke(
-                Object(),
-                "",
-                mapOf(
-                    "statusCode" to "480",
-                    "statusString" to "Stale IMS transport",
-                    "localImsAddressStale" to "true",
-                ),
+        } catch (t: Exception) {
+            val localAddressText =
+                if (this::localAddr.isInitialized) localAddr.hostAddress else "uninitialized"
+            val staleReason = "outgoing RTP bind failed for localAddr=$localAddressText"
+            failOutgoingCallSetup(
+                statusString = "Stale IMS transport",
+                logReason = staleReason,
+                error = t,
+                reconnectReason = staleReason,
+                localImsAddressStale = true,
             )
             return null
         }
         try {
             network.bindSocket(rtpSocket)
-        } catch (t: Throwable) {
-            Rlog.e(TAG, "Failed to bind outgoing RTP socket to IMS network", t)
-            try { rtpSocket.close() } catch (_: Throwable) {}
-            reconnectIms("outgoing RTP network.bindSocket failed")
+        } catch (t: Exception) {
+            val failureReason = "outgoing RTP network.bindSocket failed"
+            failOutgoingCallSetup(
+                statusString = "IMS media network unavailable",
+                logReason = failureReason,
+                error = t,
+                rtpSocket = rtpSocket,
+                reconnectReason = failureReason,
+            )
             return null
         }
         rtpSocket.soTimeout = RTP_SOCKET_RECEIVE_TIMEOUT_MS
@@ -5349,18 +5435,33 @@ fun onWfcDisabled(reason: String) {
         destination: String,
         rtpSocket: DatagramSocket,
         body: ByteArray,
-    ) {
-        SipOutgoingInviteInitialSend.write(
-            logTag = TAG,
-            msg = msg,
-            phoneNumber = phoneNumber,
-            normalizedPhoneNumber = normalizedPhoneNumber,
-            destination = destination,
-            rtpSocket = rtpSocket,
-            body = body,
-            debugContext = { context -> imsDualSimDebugContext(context) },
-            writeBytes = { bytes -> writeSipBytesWithFlush(socket.gWriter(), "SipHandler msg", bytes) },
-        )
+    ): Boolean {
+        return try {
+            SipOutgoingInviteInitialSend.write(
+                logTag = TAG,
+                msg = msg,
+                phoneNumber = phoneNumber,
+                normalizedPhoneNumber = normalizedPhoneNumber,
+                destination = destination,
+                rtpSocket = rtpSocket,
+                body = body,
+                debugContext = { context -> imsDualSimDebugContext(context) },
+                writeBytes = { bytes ->
+                    writeSipBytesWithFlush(socket.gWriter(), "SipHandler msg", bytes)
+                },
+            )
+            true
+        } catch (t: Exception) {
+            val failureReason = "initial outgoing INVITE write failed"
+            failOutgoingCallSetup(
+                statusString = "IMS signaling transport unavailable",
+                logReason = failureReason,
+                error = t,
+                rtpSocket = rtpSocket,
+                reconnectReason = failureReason,
+            )
+            false
+        }
     }
 
 
@@ -5385,7 +5486,7 @@ fun onWfcDisabled(reason: String) {
     private fun sendInitialOutgoingInvite(
         phoneNumber: String,
         rtpSocket: DatagramSocket,
-    ) {
+    ): Boolean {
         val outgoingInviteSdpOffer = buildOutgoingInviteSdpOffer(rtpSocket)
         val outgoingInviteBody = outgoingInviteSdpOffer.inviteBody
 
@@ -5409,7 +5510,7 @@ fun onWfcDisabled(reason: String) {
             sendState = initialOutgoingInviteSendState,
             rtpSocket = rtpSocket,
         )
-        writeInitialOutgoingInvite(
+        return writeInitialOutgoingInvite(
             msg = msg,
             phoneNumber = phoneNumber,
             normalizedPhoneNumber = normalizedPhoneNumber,
@@ -5425,14 +5526,29 @@ fun onWfcDisabled(reason: String) {
             callStarted.set(false)
             threadsStarted.set(false)
             callGeneration.incrementAndGet()
+            outgoingCallSetupFailureReported.set(false)
+            outgoingCallSetupInProgress.set(true)
             clearPendingOutgoingInvite(closeRtpSocket = true, reason = "new outgoing call")
 
-            val rtpSocket = createOutgoingCallRtpSocket() ?: return@thread
-
-            sendInitialOutgoingInvite(
-                phoneNumber = phoneNumber,
-                rtpSocket = rtpSocket,
-            )
+            var rtpSocket: DatagramSocket? = null
+            try {
+                rtpSocket = createOutgoingCallRtpSocket() ?: return@thread
+                if (
+                    sendInitialOutgoingInvite(
+                        phoneNumber = phoneNumber,
+                        rtpSocket = rtpSocket,
+                    )
+                ) {
+                    outgoingCallSetupInProgress.set(false)
+                }
+            } catch (t: Exception) {
+                failOutgoingCallSetup(
+                    statusString = "Outgoing IMS call setup failed",
+                    logReason = "pre-INVITE outgoing setup failed",
+                    error = t,
+                    rtpSocket = rtpSocket,
+                )
+            }
         }
     }
 

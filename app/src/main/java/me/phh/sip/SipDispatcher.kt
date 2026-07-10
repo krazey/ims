@@ -39,6 +39,10 @@ internal class SipDispatcher(
         lock.withLock { responseCallbacks += callId to cb }
     }
 
+    fun removeResponseCallback(callId: String) {
+        lock.withLock { responseCallbacks -= callId }
+    }
+
     fun clearCallbacks() {
         lock.withLock {
             requestCallbacks = emptyMap()
