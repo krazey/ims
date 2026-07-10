@@ -60,18 +60,25 @@ internal object SipUpdateResponseBuilder {
                 requestHeaders = request.headers,
                 logTag = TAG,
             )
+        val responseHeaders =
+            """
+                Content-Type: application/sdp
+                Supported: 100rel, replaces, timer
+                Require: precondition
+                Call-ID: $callId
+            """.toSipHeadersMap()
+        val requiredExtensions =
+            (responseHeaders["require"].orEmpty() +
+                sessionTimerHeaders["require"].orEmpty())
+                .distinct()
         return SipResponse(
             statusCode = 200,
             statusString = "OK",
             headersParam = request.headers.filter { (k, _) ->
                 k in listOf("cseq", "via", "from", "to", "call-id")
-            } + """
-                Content-Type: application/sdp
-                Supported: 100rel, replaces, timer
-                Require: precondition
-                Call-ID: $callId
-            """.toSipHeadersMap() +
-                sessionTimerHeaders,
+            } + responseHeaders +
+                sessionTimerHeaders +
+                mapOf("require" to requiredExtensions),
             body = answerSdp,
         )
     }
