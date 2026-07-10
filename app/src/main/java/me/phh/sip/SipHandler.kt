@@ -2858,7 +2858,6 @@ fun onWfcDisabled(reason: String) {
             sdp = updateState.answerSdp,
             remoteContact = updateState.remoteContact,
         )
-        currentCall = updatedCall
         return updatedCall
     }
 
@@ -2954,12 +2953,15 @@ fun onWfcDisabled(reason: String) {
         val isSdp = SipUpdateDialogValidator.isSdpUpdate(request)
 
         if (!isSdp) {
-            SipUpdateResponseWriter.writeOkWithoutSdp(
-                request = request,
-                requestCallId = requestCallId,
-                updateResponseWriter = updateResponseWriter,
-                logTag = TAG,
-            )
+            if (!SipUpdateResponseWriter.writeOkWithoutSdp(
+                    request = request,
+                    requestCallId = requestCallId,
+                    updateResponseWriter = updateResponseWriter,
+                    logTag = TAG,
+                )
+            ) {
+                reconnectIms("UPDATE 200 response write failed")
+            }
             return 0
         }
 
@@ -2976,15 +2978,20 @@ fun onWfcDisabled(reason: String) {
             updateSdpOffer = updateSdpOffer,
         ) ?: return 488
 
-        SipUpdateResponseWriter.writeSdpAnswerAndRingingIfNeeded(
-            request = request,
-            call = call,
-            updateResponseWriter = updateResponseWriter,
-            updatedCallId = updateSdpAnswerState.updatedCall.callIdOrEmpty(),
-            answerSdp = updateSdpAnswerState.answerSdp,
-            logTag = TAG,
-        )
+        if (!SipUpdateResponseWriter.writeSdpAnswerAndRingingIfNeeded(
+                request = request,
+                call = call,
+                updateResponseWriter = updateResponseWriter,
+                updatedCallId = updateSdpAnswerState.updatedCall.callIdOrEmpty(),
+                answerSdp = updateSdpAnswerState.answerSdp,
+                logTag = TAG,
+            )
+        ) {
+            reconnectIms("UPDATE SDP 200 response write failed")
+            return 0
+        }
 
+        currentCall = updateSdpAnswerState.updatedCall
         return 0
     }
 
@@ -6064,17 +6071,6 @@ fun onWfcDisabled(reason: String) {
         )
 
 
-        updateDialogCallFromInDialogInviteSdp(
-            call = call,
-            request = request,
-            answerSdp = answerSdp,
-            amrTrack = amrTrack,
-            amrTrackDesc = amrTrackDesc,
-            dtmfTrack = dtmfTrack,
-            dtmfTrackDesc = dtmfTrackDesc,
-            rtpRemoteAddr = rtpRemoteAddr,
-            rtpRemotePort = rtpRemotePort,
-        )
         val inDialogSessionTimerHeaders = SipInDialogInvite.sessionTimerHeaders(
             request = request,
             logTag = TAG,
@@ -6089,9 +6085,25 @@ fun onWfcDisabled(reason: String) {
         )
 
 
-        SipInDialogInvite.writeOkResponse(
-            responseWriter = responseWriter,
-            response = response,
+        if (!SipInDialogInvite.writeOkResponse(
+                responseWriter = responseWriter,
+                response = response,
+            )
+        ) {
+            reconnectIms("in-dialog INVITE 200 response write failed")
+            return 0
+        }
+
+        updateDialogCallFromInDialogInviteSdp(
+            call = call,
+            request = request,
+            answerSdp = answerSdp,
+            amrTrack = amrTrack,
+            amrTrackDesc = amrTrackDesc,
+            dtmfTrack = dtmfTrack,
+            dtmfTrackDesc = dtmfTrackDesc,
+            rtpRemoteAddr = rtpRemoteAddr,
+            rtpRemotePort = rtpRemotePort,
         )
         maybeReportRemoteHoldState(
             callId = callId,

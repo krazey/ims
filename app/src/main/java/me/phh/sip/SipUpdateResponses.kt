@@ -70,12 +70,12 @@ internal object SipUpdateResponseWriter {
         requestCallId: String,
         updateResponseWriter: OutputStream,
         logTag: String,
-    ) {
+    ): Boolean {
         val reply = SipUpdateResponseBuilder.okWithoutSdp(
             request = request,
             requestCallId = requestCallId,
         )
-        writeReply(
+        return writeReply(
             updateResponseWriter = updateResponseWriter,
             reply = reply,
             logTag = logTag,
@@ -86,9 +86,9 @@ internal object SipUpdateResponseWriter {
         updateResponseWriter: OutputStream,
         reply: SipResponse,
         logTag: String,
-    ) {
+    ): Boolean {
         Rlog.d(logTag, "Replying to UPDATE with $reply")
-        SipMessageWriter.write(
+        return SipMessageWriter.write(
             updateResponseWriter,
             reply.toByteArray(),
             "UPDATE response ${reply.statusCode}",
@@ -103,23 +103,27 @@ internal object SipUpdateResponseWriter {
         updatedCallId: String,
         answerSdp: ByteArray,
         logTag: String,
-    ) {
+    ): Boolean {
         val reply = SipUpdateResponseBuilder.okWithSdp(
             request = request,
             callId = updatedCallId,
             answerSdp = answerSdp,
         )
-        writeReply(
-            updateResponseWriter = updateResponseWriter,
-            reply = reply,
-            logTag = logTag,
-        )
+        if (!writeReply(
+                updateResponseWriter = updateResponseWriter,
+                reply = reply,
+                logTag = logTag,
+            )
+        ) {
+            return false
+        }
 
         sendIncomingRingingIfNeeded(
             call = call,
             updateResponseWriter = updateResponseWriter,
             logTag = logTag,
         )
+        return true
     }
 
     fun sendIncomingRingingIfNeeded(

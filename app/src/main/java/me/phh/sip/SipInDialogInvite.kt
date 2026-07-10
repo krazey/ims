@@ -364,8 +364,8 @@ internal object SipInDialogInvite {
     fun writeOkResponse(
         responseWriter: OutputStream,
         response: SipResponse,
-    ) {
-        SipMessageWriter.write(
+    ): Boolean {
+        return SipMessageWriter.write(
             responseWriter,
             response.toByteArray(),
             "in-dialog INVITE 200 response",
