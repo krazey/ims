@@ -459,6 +459,23 @@ private val smsHandler = SipSmsHandler(
         timeoutScheduler = { delayMs, action -> myHandler.postDelayed({ action() }, delayMs) },
     )
 
+    private val sessionRefresher = SipSessionRefresher(
+        tag = TAG,
+        handler = myHandler,
+        dialogProvider = { callId -> sessionRefreshDialog(callId) },
+        writeRequest = { callId, label, bytes ->
+            val writer = dispatcher.writerForCallId(callId) ?: socket.gWriter()
+            writeSipBytesWithFlush(writer, label, bytes)
+        },
+        responseCallbackSetter = { callId, cseqNumber, method, callback ->
+            setResponseCallback(callId, cseqNumber, method, callback)
+        },
+        responseCallbackRemover = { callId, cseqNumber, method ->
+            removeResponseCallback(callId, cseqNumber, method)
+        },
+        reconnectIms = { reason -> reconnectIms(reason) },
+    )
+
     var onSmsReceived: ((Int, String, ByteArray) -> Unit)?
         get() = smsHandler.onSmsReceived
         set(value) {
@@ -945,6 +962,7 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         clearPendingOutgoingInvite(closeRtpSocket = true, reason = "IMS reconnect")
         callGeneration.incrementAndGet()
         prAckWaitTracker.clearAndNotifyAll()
+        sessionRefresher.cancelAll("IMS reconnect")
         dispatcher.clearCallbacks()
         dispatcher.clearWriters()
         smsHandler.clearState()
@@ -2792,6 +2810,17 @@ fun onWfcDisabled(reason: String) {
             contact = contact,
         )
 
+    private fun sessionRefreshDialog(callId: String): SipSessionRefreshDialog? {
+        val call = sequenceOf(currentCall, pendingSwapHeldActiveCall, heldForegroundCall)
+            .filterNotNull()
+            .firstOrNull { it.callIdOrNull() == callId }
+            ?: return null
+        return SipSessionRefreshDialog(
+            destination = call.remoteContact,
+            requestHeaders = localDialogHeadersForRequest(call, SipMethod.UPDATE),
+        )
+    }
+
     fun handleAck(request: SipRequest): Int {
         val callId = request.callIdOrEmpty()
         val call = currentCall
@@ -2812,6 +2841,10 @@ fun onWfcDisabled(reason: String) {
             onIncomingCallConnected?.invoke(
                 Object(),
                 mapOf("call-id" to callId) + SipAudioCodecNegotiator.audioCodecExtras(call.audioCodec),
+            )
+            sessionRefresher.updateFromIncomingRequest(
+                callId = callId,
+                requestHeaders = call.callHeaders,
             )
 
             if (incomingHangupAfterAck.getAndSet(false)) {
@@ -2992,6 +3025,11 @@ fun onWfcDisabled(reason: String) {
                 )
             ) {
                 reconnectIms("UPDATE 200 response write failed")
+            } else {
+                sessionRefresher.updateFromIncomingRequest(
+                    callId = requestCallId,
+                    requestHeaders = request.headers,
+                )
             }
             return 0
         }
@@ -3023,6 +3061,10 @@ fun onWfcDisabled(reason: String) {
         }
 
         currentCall = updateSdpAnswerState.updatedCall
+        sessionRefresher.updateFromIncomingRequest(
+            callId = requestCallId,
+            requestHeaders = request.headers,
+        )
         return 0
     }
 
@@ -3115,6 +3157,7 @@ fun onWfcDisabled(reason: String) {
         )
         heldForegroundCall = null
         if (closeRtpSocket) {
+            sessionRefresher.cancel(heldCallId, reason)
             try { held.rtpSocket.close() } catch (t: Throwable) {
                 Rlog.d(TAG, "Failed to close held foreground RTP socket: callId=$heldCallId", t)
             }
@@ -3228,6 +3271,7 @@ fun onWfcDisabled(reason: String) {
         }
 
         val remoteMethodReason = SipRemoteDialogTermination.remoteMethodReason(request.method)
+        sessionRefresher.cancel(callId, remoteMethodReason)
         if (currentCall?.outgoing == false) rememberTerminatedIncomingCall(callId, remoteMethodReason)
         val terminatedCall = currentCall
         val heldToResume = heldForegroundCall?.takeIf { terminatedCall != null && isBye }
@@ -4289,6 +4333,7 @@ fun onWfcDisabled(reason: String) {
 
     private fun sendByeForCall(call: Call) {
         val callId = call.callIdOrNull()
+        callId?.let { sessionRefresher.cancel(it, "local BYE") }
         val byeHeaders = localDialogHeadersForRequest(call, SipMethod.BYE)
         val bye = SipRemoteDialogTermination.byeRequest(
             remoteContact = call.remoteContact,
@@ -4492,8 +4537,8 @@ fun onWfcDisabled(reason: String) {
 
     Session timers (RFC 4028): we advertise 1800 seconds and prefer the peer as
     refresher. Incoming requests without a refresher preference are also assigned to the
-    peer. Explicit requests that select PhhIms as refresher are accepted and logged, but
-    periodic local refresh sending is not yet implemented.
+    peer. If the peer explicitly selects PhhIms, an in-dialog UPDATE is scheduled at
+    half the negotiated interval.
      */
 
     var respInFlight: SipResponse? = null
@@ -4868,6 +4913,14 @@ fun onWfcDisabled(reason: String) {
             inviteCseq = cseq,
             outgoingDialogNextCseq = outgoingDialogNextCseq,
         )
+        if (currentCall?.callIdOrNull() == finalInviteCallId) {
+            sessionRefresher.updateFromHeaders(
+                callId = finalInviteCallId,
+                headers = response.headers,
+                localRefresher = "uac",
+                defaultRefresher = "uas",
+            )
+        }
         return handleOutgoingFinalInvitePostAckState(
             finalInviteCallId = finalInviteCallId,
             finalInviteAfterLocalCancel = finalInviteAfterLocalCancel,
@@ -6135,6 +6188,10 @@ fun onWfcDisabled(reason: String) {
             rtpRemoteAddr = rtpRemoteAddr,
             rtpRemotePort = rtpRemotePort,
         )
+        sessionRefresher.updateFromIncomingRequest(
+            callId = callId,
+            requestHeaders = request.headers,
+        )
         maybeReportRemoteHoldState(
             callId = callId,
             remoteDirection = remoteDirection,
@@ -6680,6 +6737,11 @@ fun onWfcDisabled(reason: String) {
                         onComplete(false)
                         return@setResponseCallback true
                     }
+                    sessionRefresher.updateFromHeaders(
+                        callId = callId,
+                        headers = response.headers,
+                        localRefresher = "uac",
+                    )
                     pauseCurrentCallMediaForLocalHold(
                         call = call,
                         reason = "local hold re-INVITE accepted",
@@ -6914,6 +6976,11 @@ fun onWfcDisabled(reason: String) {
                         onComplete(false)
                         return@setResponseCallback true
                     }
+                    sessionRefresher.updateFromHeaders(
+                        callId = callId,
+                        headers = response.headers,
+                        localRefresher = "uac",
+                    )
                     val resumedCall = callWithRtpFromLocalReinviteAnswer(
                         call = call,
                         response = response,
@@ -7008,6 +7075,11 @@ fun onWfcDisabled(reason: String) {
                         onComplete(false)
                         return@setResponseCallback true
                     }
+                    sessionRefresher.updateFromHeaders(
+                        callId = callId,
+                        headers = response.headers,
+                        localRefresher = "uac",
+                    )
                     val held = clearHeldForegroundCall(
                         callId = callId,
                         closeRtpSocket = false,

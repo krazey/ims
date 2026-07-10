@@ -19,7 +19,7 @@ internal class SipSessionRefresher(
     private val tag: String,
     private val handler: Handler,
     private val dialogProvider: (String) -> SipSessionRefreshDialog?,
-    private val writeRequest: (String, ByteArray) -> Boolean,
+    private val writeRequest: (String, String, ByteArray) -> Boolean,
     private val responseCallbackSetter: (
         String,
         Int,
@@ -46,6 +46,33 @@ internal class SipSessionRefresher(
     private val lock = Any()
     private val states = mutableMapOf<String, State>()
     private var nextGeneration = 1
+
+    fun updateFromHeaders(
+        callId: String,
+        headers: SipHeadersMap,
+        localRefresher: String,
+        defaultRefresher: String? = null,
+    ) {
+        val selection = SipSessionTimerNegotiation.selectionFromHeaders(
+            headers = headers,
+            defaultRefresher = defaultRefresher,
+        ) ?: return
+        update(callId, selection, localRefresher)
+    }
+
+    fun updateFromIncomingRequest(
+        callId: String,
+        requestHeaders: SipHeadersMap,
+    ) {
+        updateFromHeaders(
+            callId = callId,
+            headers = SipSessionTimerNegotiation.responseHeadersForIncomingRequest(
+                requestHeaders = requestHeaders,
+                logTag = tag,
+            ),
+            localRefresher = "uas",
+        )
+    }
 
     fun update(
         callId: String,
@@ -143,6 +170,7 @@ internal class SipSessionRefresher(
             handleResponse(callId, inFlight, response)
         }
         if (!writeRequest(
+                callId,
                 "session refresh UPDATE callId=$callId cseq=$cseq",
                 request.toByteArray(),
             )
