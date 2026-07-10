@@ -10,11 +10,50 @@ import android.telephony.Rlog
  * peer refreshes but does not originate periodic refreshes, so prefer the peer
  * as refresher whenever the initial UAC left the role open.
  */
+internal data class SipSessionTimerSelection(
+    val intervalSeconds: Int,
+    val refresher: String,
+)
+
 internal object SipSessionTimerNegotiation {
     private const val MIN_INTERVAL_SECONDS = 90
 
     fun outgoingRequestValue(intervalSeconds: Int): String =
         "${intervalSeconds.coerceAtLeast(MIN_INTERVAL_SECONDS)};refresher=uas"
+
+    fun selectionFromHeaders(
+        headers: SipHeadersMap,
+        defaultRefresher: String? = null,
+    ): SipSessionTimerSelection? {
+        val rawSessionExpires = sessionExpiresHeader(headers)
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: return null
+        val interval = rawSessionExpires
+            .substringBefore(';')
+            .trim()
+            .toIntOrNull()
+            ?.takeIf { it >= MIN_INTERVAL_SECONDS }
+            ?: return null
+        val refresher = parameter(rawSessionExpires, "refresher")
+            ?.takeIf { it == "uac" || it == "uas" }
+            ?: defaultRefresher
+                ?.lowercase()
+                ?.takeIf { it == "uac" || it == "uas" }
+            ?: return null
+        return SipSessionTimerSelection(
+            intervalSeconds = interval,
+            refresher = refresher,
+        )
+    }
+
+    fun minimumIntervalFromResponse(headers: SipHeadersMap): Int? =
+        firstHeaders(headers, listOf("min-se"))
+            .firstOrNull()
+            ?.substringBefore(';')
+            ?.trim()
+            ?.toIntOrNull()
+            ?.coerceAtLeast(MIN_INTERVAL_SECONDS)
 
     fun rejectionResponseForIncomingRequest(
         request: SipRequest,
