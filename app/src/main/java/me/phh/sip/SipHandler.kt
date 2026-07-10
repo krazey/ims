@@ -570,8 +570,25 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         dispatcher.setResponseCallback(callId, cb)
     }
 
+    private fun setResponseCallback(
+        callId: String,
+        cseqNumber: Int,
+        method: SipMethod,
+        cb: (SipResponse) -> Boolean,
+    ) {
+        dispatcher.setResponseCallback(callId, cseqNumber, method, cb)
+    }
+
     private fun removeResponseCallback(callId: String) {
         dispatcher.removeResponseCallback(callId)
+    }
+
+    private fun removeResponseCallback(
+        callId: String,
+        cseqNumber: Int,
+        method: SipMethod,
+    ) {
+        dispatcher.removeResponseCallback(callId, cseqNumber, method)
     }
 
     fun parseMessage(reader: SipReader, writer: OutputStream): Boolean {

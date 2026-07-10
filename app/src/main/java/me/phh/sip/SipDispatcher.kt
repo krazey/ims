@@ -21,7 +21,15 @@ internal class SipDispatcher(
 ) {
     private val lock = ReentrantLock()
     private var requestCallbacks: Map<SipMethod, (SipRequest) -> Int> = emptyMap()
+    private data class ResponseTransactionKey(
+        val callId: String,
+        val cseqNumber: Int,
+        val method: SipMethod,
+    )
+
     private var responseCallbacks: Map<String, (SipResponse) -> Boolean> = emptyMap()
+    private var transactionResponseCallbacks:
+        Map<ResponseTransactionKey, (SipResponse) -> Boolean> = emptyMap()
 
     /**
      * SIP responses must be written back on the same transport flow that
@@ -39,14 +47,39 @@ internal class SipDispatcher(
         lock.withLock { responseCallbacks += callId to cb }
     }
 
+    fun setResponseCallback(
+        callId: String,
+        cseqNumber: Int,
+        method: SipMethod,
+        cb: (SipResponse) -> Boolean,
+    ) {
+        val key = ResponseTransactionKey(callId, cseqNumber, method)
+        lock.withLock { transactionResponseCallbacks += key to cb }
+    }
+
     fun removeResponseCallback(callId: String) {
-        lock.withLock { responseCallbacks -= callId }
+        lock.withLock {
+            responseCallbacks -= callId
+            transactionResponseCallbacks = transactionResponseCallbacks.filterKeys {
+                it.callId != callId
+            }
+        }
+    }
+
+    fun removeResponseCallback(
+        callId: String,
+        cseqNumber: Int,
+        method: SipMethod,
+    ) {
+        val key = ResponseTransactionKey(callId, cseqNumber, method)
+        lock.withLock { transactionResponseCallbacks -= key }
     }
 
     fun clearCallbacks() {
         lock.withLock {
             requestCallbacks = emptyMap()
             responseCallbacks = emptyMap()
+            transactionResponseCallbacks = emptyMap()
         }
     }
 
@@ -141,12 +174,34 @@ internal class SipDispatcher(
             return false
         }
 
-        val responseCb = lock.withLock { responseCallbacks[callId] }
+        val transactionKey = responseTransactionKey(response, callId)
+        val transactionCb = transactionKey?.let { key ->
+            lock.withLock { transactionResponseCallbacks[key] }
+        }
+        val responseCb = transactionCb ?: lock.withLock { responseCallbacks[callId] }
             ?: return true
 
         if (responseCb(response)) {
-            lock.withLock { responseCallbacks -= callId }
+            lock.withLock {
+                if (transactionKey != null && transactionCb != null) {
+                    transactionResponseCallbacks -= transactionKey
+                } else {
+                    responseCallbacks -= callId
+                }
+            }
         }
         return true
+    }
+    private fun responseTransactionKey(
+        response: SipResponse,
+        callId: String,
+    ): ResponseTransactionKey? {
+        val cseq = response.headers["cseq"]?.firstOrNull() ?: return null
+        val parts = cseq.trim().split(Regex("\\s+"), limit = 2)
+        val cseqNumber = parts.getOrNull(0)?.toIntOrNull() ?: return null
+        val method = parts.getOrNull(1)?.let { rawMethod ->
+            SipMethod.values().firstOrNull { it.name.equals(rawMethod, ignoreCase = true) }
+        } ?: return null
+        return ResponseTransactionKey(callId, cseqNumber, method)
     }
 }
