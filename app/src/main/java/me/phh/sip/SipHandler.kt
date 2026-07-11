@@ -5776,8 +5776,7 @@ fun onWfcDisabled(reason: String) {
         dgramBuf: ByteArray,
         receivedCount: Int,
         audioCodec: NegotiatedAudioCodec,
-        decoder: android.media.MediaCodec,
-        downlinkPlayoutBuffers: SipDownlinkPcmPlayoutBuffers,
+        decoderWorker: SipDownlinkAudioDecoderWorker,
     ) {
         if (receiveCall.outgoing) {
             if (callStarted.get()) {
@@ -5808,18 +5807,14 @@ fun onWfcDisabled(reason: String) {
 
         if (amrFrame == null) return
 
-        SipDownlinkAudioDecoder.queueCodecFrameAndDrainPcm(
-            logTag = TAG,
-            decoder = decoder,
-            codecFrame = amrFrame.codecFrame,
-            pcmQueue = downlinkPlayoutBuffers.pcmQueue,
-        )
+        decoderWorker.offer(amrFrame.codecFrame)
     }
 
 
     private data class DownlinkAudioRuntime(
         val audioTrack: android.media.AudioTrack,
         val decoder: android.media.MediaCodec,
+        val decoderWorker: SipDownlinkAudioDecoderWorker,
         val playoutBuffers: SipDownlinkPcmPlayoutBuffers,
         val playoutThread: Thread,
         val previousAudioMode: Int,
@@ -5831,12 +5826,12 @@ fun onWfcDisabled(reason: String) {
     ): DownlinkAudioRuntime {
         try {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
-            Rlog.d(TAG, "Downlink RTP/decode thread priority set to urgent audio")
+            Rlog.d(TAG, "Downlink RTP receive thread priority set to urgent audio")
         } catch (t: Throwable) {
-            Rlog.w(TAG, "Failed to set downlink RTP/decode thread priority", t)
+            Rlog.w(TAG, "Failed to set downlink RTP receive thread priority", t)
         }
 
-        Rlog.d(TAG, "Decode thread started: codec=${audioCodec.name}/${audioCodec.sampleRate} gen=$generation")
+        Rlog.d(TAG, "Downlink RTP receive started: codec=${audioCodec.name}/${audioCodec.sampleRate} gen=$generation")
         val audioManager = ctxt.getSystemService(android.media.AudioManager::class.java)
         val prevDecodeAudioMode = audioManager.mode
         if (prevDecodeAudioMode != AudioManager.MODE_IN_COMMUNICATION) {
@@ -5867,10 +5862,19 @@ fun onWfcDisabled(reason: String) {
         val decoder = SipAudioCodecFactory.createStartedDecoder(
             audioCodec = audioCodec,
         )
+        val decoderWorker = SipDownlinkAudioDecoderWorker(
+            logTag = TAG,
+            decoder = decoder,
+            pcmQueue = downlinkPlayoutBuffers.pcmQueue,
+            callStopped = callStopped,
+            callGeneration = callGeneration,
+            generation = generation,
+        )
 
         return DownlinkAudioRuntime(
             audioTrack = audioTrack,
             decoder = decoder,
+            decoderWorker = decoderWorker,
             playoutBuffers = downlinkPlayoutBuffers,
             playoutThread = downlinkPlayoutThread,
             previousAudioMode = prevDecodeAudioMode,
@@ -5880,8 +5884,7 @@ fun onWfcDisabled(reason: String) {
 
     private fun runDownlinkRtpReceiveLoop(
         audioCodec: NegotiatedAudioCodec,
-        decoder: android.media.MediaCodec,
-        downlinkPlayoutBuffers: SipDownlinkPcmPlayoutBuffers,
+        decoderWorker: SipDownlinkAudioDecoderWorker,
         generation: Int,
     ): Int {
         var receivedCount = 0
@@ -5903,8 +5906,7 @@ fun onWfcDisabled(reason: String) {
                 dgramBuf = dgramBuf,
                 receivedCount = receivedCount,
                 audioCodec = audioCodec,
-                decoder = decoder,
-                downlinkPlayoutBuffers = downlinkPlayoutBuffers,
+                decoderWorker = decoderWorker,
             )
         }
         return receivedCount
@@ -5921,14 +5923,14 @@ fun onWfcDisabled(reason: String) {
             )
             val audioTrack = downlinkRuntime.audioTrack
             val decoder = downlinkRuntime.decoder
+            val decoderWorker = downlinkRuntime.decoderWorker
             val downlinkPlayoutBuffers = downlinkRuntime.playoutBuffers
             val downlinkPlayoutThread = downlinkRuntime.playoutThread
             val prevDecodeAudioMode = downlinkRuntime.previousAudioMode
 
             val receivedCount = runDownlinkRtpReceiveLoop(
                 audioCodec = audioCodec,
-                decoder = decoder,
-                downlinkPlayoutBuffers = downlinkPlayoutBuffers,
+                decoderWorker = decoderWorker,
                 generation = gen,
             )
             echoCancellation.stop(
@@ -5940,6 +5942,7 @@ fun onWfcDisabled(reason: String) {
                 context = ctxt,
                 audioTrack = audioTrack,
                 decoder = decoder,
+                decoderWorker = decoderWorker,
                 playoutBuffers = downlinkPlayoutBuffers,
                 playoutThread = downlinkPlayoutThread,
                 callStopped = callStopped,

@@ -200,12 +200,30 @@ internal object SipDownlinkPcmPlayout {
                         pcm = pcm,
                         generation = generation,
                     )
-                    audioTrack.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
-                    nextWriteAtMs += 20L
-                    val afterWriteMs = SystemClock.elapsedRealtime()
-                    if (afterWriteMs - nextWriteAtMs > 200L) {
-                        nextWriteAtMs = afterWriteMs + 20L
+                    val writeStartedAtMs = SystemClock.elapsedRealtime()
+                    val written = audioTrack.write(
+                        pcm,
+                        0,
+                        pcm.size,
+                        AudioTrack.WRITE_BLOCKING,
+                    )
+                    if (written < 0) {
+                        Rlog.w(logTag, "Downlink AudioTrack write failed: error=$written")
+                    } else if (written != pcm.size) {
+                        Rlog.w(
+                            logTag,
+                            "Downlink AudioTrack short write: " +
+                                "written=$written expected=${pcm.size}",
+                        )
                     }
+
+                    // Do not replay missed deadlines back-to-back. AEC or
+                    // scheduler stalls can otherwise drain the jitter queue in
+                    // a burst and create artificial underruns on the next pass.
+                    nextWriteAtMs = maxOf(
+                        nextWriteAtMs + 20L,
+                        writeStartedAtMs + 20L,
+                    )
                 }
             } catch (_: InterruptedException) {
                 // Normal during call teardown.

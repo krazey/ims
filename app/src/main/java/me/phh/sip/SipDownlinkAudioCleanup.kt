@@ -8,12 +8,13 @@ import android.telephony.Rlog
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
-object SipDownlinkAudioCleanup {
+internal object SipDownlinkAudioCleanup {
     fun cleanup(
         logTag: String,
         context: Context,
         audioTrack: AudioTrack,
         decoder: MediaCodec,
+        decoderWorker: SipDownlinkAudioDecoderWorker,
         playoutBuffers: SipDownlinkPcmPlayoutBuffers,
         playoutThread: Thread,
         callStopped: AtomicBoolean,
@@ -22,12 +23,19 @@ object SipDownlinkAudioCleanup {
         receivedCount: Int,
         previousAudioMode: Int,
     ) {
+        decoderWorker.stop()
+
         playoutBuffers.running.set(false)
         try {
             playoutThread.interrupt()
+            playoutThread.join(500L)
         } catch (t: Throwable) {
-            Rlog.d(logTag, "Downlink playout interrupt failed during decode cleanup", t)
+            Rlog.d(logTag, "Downlink playout stop failed during decode cleanup", t)
         }
+        if (playoutThread.isAlive) {
+            Rlog.w(logTag, "Downlink playout thread did not stop promptly")
+        }
+
         try {
             audioTrack.stop()
         } catch (t: Throwable) {
@@ -64,6 +72,10 @@ object SipDownlinkAudioCleanup {
                 previousMode = previousAudioMode,
             )
         }
-        Rlog.d(logTag, "Decode thread cleanup complete: callStopped=$stopped genMismatch=$genMismatch received=$receivedCount")
+        Rlog.d(
+            logTag,
+            "Decode thread cleanup complete: callStopped=$stopped " +
+                "genMismatch=$genMismatch received=$receivedCount",
+        )
     }
 }
