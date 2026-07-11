@@ -1,47 +1,118 @@
 #include <jni.h>
-#include <android/log.h>
+
+#include <math.h>
 #include <stdint.h>
+#include <string.h>
+
 #include <rnnoise.h>
 
-static float infArray[480];
-static float outfArray[480];
-JNIEXPORT void JNICALL Java_me_phh_ims_Rnnoise_processFrame(JNIEnv *env, jclass clazz, jlong st, jbyteArray in, jbyteArray out) {
-    jboolean isCopy;
-    DenoiseState *state = (DenoiseState *) st;
-    jbyte *inArray = (*env)->GetByteArrayElements(env, in, &isCopy);
-    jbyte *outArray = (*env)->GetByteArrayElements(env, out, &isCopy);
-    uint16_t *inArray16 = (uint16_t *) inArray;
+#define RNNOISE_MAX_FRAME_SAMPLES 480
+#define PCM_SAMPLE_BYTES 2
 
-    float average = 0;
-    for (int i = 0; i < 480; i++) {
-        infArray[i] = inArray16[i] / 32768.0f;
-        average += infArray[i];
-    }
-    //__android_log_print(ANDROID_LOG_INFO, "Rnnoise", "Average: %f", average / 480.0f);
-    rnnoise_process_frame(state, outfArray, infArray);
+JNIEXPORT jfloat JNICALL
+Java_me_phh_ims_Rnnoise_processFrameInPlace(
+        JNIEnv *env,
+        jobject thiz,
+        jlong state_handle,
+        jbyteArray pcm,
+        jint offset_bytes) {
+    (void)thiz;
 
-    for (int i = 0; i < 480; i++) {
-        outfArray[i] = infArray[i];
+    DenoiseState *state =
+            (DenoiseState *)(intptr_t)state_handle;
+    if (state == NULL || pcm == NULL || offset_bytes < 0) {
+        return -1.0f;
     }
 
-    uint16_t *outArray16 = (uint16_t *) outArray;
-    for (int i = 0; i < 480; i++) {
-        outArray16[i] = outfArray[i] * 32768.0f;
+    const int frame_samples = rnnoise_get_frame_size();
+    if (frame_samples <= 0 ||
+            frame_samples > RNNOISE_MAX_FRAME_SAMPLES) {
+        return -1.0f;
     }
-    (*env)->ReleaseByteArrayElements(env, in, inArray, 0);
-    (*env)->ReleaseByteArrayElements(env, out, outArray, 0);
+
+    const int frame_bytes = frame_samples * PCM_SAMPLE_BYTES;
+    const jsize pcm_size = (*env)->GetArrayLength(env, pcm);
+    if (offset_bytes > pcm_size - frame_bytes) {
+        return -1.0f;
+    }
+
+    jbyte pcm_bytes[RNNOISE_MAX_FRAME_SAMPLES * PCM_SAMPLE_BYTES];
+    int16_t pcm_samples[RNNOISE_MAX_FRAME_SAMPLES];
+    float input[RNNOISE_MAX_FRAME_SAMPLES];
+    float output[RNNOISE_MAX_FRAME_SAMPLES];
+
+    (*env)->GetByteArrayRegion(
+            env,
+            pcm,
+            offset_bytes,
+            frame_bytes,
+            pcm_bytes);
+    if ((*env)->ExceptionCheck(env)) {
+        return -1.0f;
+    }
+
+    memcpy(pcm_samples, pcm_bytes, frame_bytes);
+    for (int i = 0; i < frame_samples; i++) {
+        input[i] = (float)pcm_samples[i];
+    }
+
+    const float voice_probability =
+            rnnoise_process_frame(state, output, input);
+
+    for (int i = 0; i < frame_samples; i++) {
+        float sample = output[i];
+        if (sample > INT16_MAX) {
+            sample = INT16_MAX;
+        } else if (sample < INT16_MIN) {
+            sample = INT16_MIN;
+        }
+        pcm_samples[i] = (int16_t)lrintf(sample);
+    }
+
+    memcpy(pcm_bytes, pcm_samples, frame_bytes);
+    (*env)->SetByteArrayRegion(
+            env,
+            pcm,
+            offset_bytes,
+            frame_bytes,
+            pcm_bytes);
+    if ((*env)->ExceptionCheck(env)) {
+        return -1.0f;
+    }
+
+    return voice_probability;
 }
 
-JNIEXPORT jlong Java_me_phh_ims_Rnnoise_init(JNIEnv *env, jclass clazz) {
-    DenoiseState  *st = rnnoise_create(NULL);
-    return (jlong) st;
+JNIEXPORT jlong JNICALL
+Java_me_phh_ims_Rnnoise_init(JNIEnv *env, jobject thiz) {
+    (void)env;
+    (void)thiz;
+
+    DenoiseState *state = rnnoise_create(NULL);
+    return (jlong)(intptr_t)state;
 }
 
-JNIEXPORT void Java_me_phh_ims_Rnnoise_destroy(JNIEnv *env, jclass clazz, jlong st) {
-    DenoiseState *state = (DenoiseState *) st;
-    rnnoise_destroy(state);
+JNIEXPORT void JNICALL
+Java_me_phh_ims_Rnnoise_destroy(
+        JNIEnv *env,
+        jobject thiz,
+        jlong state_handle) {
+    (void)env;
+    (void)thiz;
+
+    DenoiseState *state =
+            (DenoiseState *)(intptr_t)state_handle;
+    if (state != NULL) {
+        rnnoise_destroy(state);
+    }
 }
 
-JNIEXPORT int Java_me_phh_ims_Rnnoise_getFrameSize(JNIEnv *env, jclass clazz) {
+JNIEXPORT jint JNICALL
+Java_me_phh_ims_Rnnoise_getFrameSize(
+        JNIEnv *env,
+        jobject thiz) {
+    (void)env;
+    (void)thiz;
+
     return rnnoise_get_frame_size();
 }
