@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
-object SipDownlinkPcmPlayout {
+internal object SipDownlinkPcmPlayout {
     private const val DOWNLINK_UNDERRUN_CONCEALMENT_FRAMES = 6
     private const val DOWNLINK_STARTUP_CONCEALMENT_PRIME_FRAMES = 4
     private const val DOWNLINK_STARTUP_REBUFFER_FRAMES = 3
@@ -37,6 +37,7 @@ object SipDownlinkPcmPlayout {
         audioTrack: AudioTrack,
         audioCodec: NegotiatedAudioCodec,
         buffers: SipDownlinkPcmPlayoutBuffers,
+        echoCancellation: SipEchoCancellationSession,
         callStopped: AtomicBoolean,
         callGeneration: AtomicInteger,
         generation: Int,
@@ -195,6 +196,10 @@ object SipDownlinkPcmPlayout {
                         fillerFrames = 0
                     }
 
+                    echoCancellation.processRender(
+                        pcm = pcm,
+                        generation = generation,
+                    )
                     audioTrack.write(pcm, 0, pcm.size, AudioTrack.WRITE_BLOCKING)
                     nextWriteAtMs += 20L
                     val afterWriteMs = SystemClock.elapsedRealtime()

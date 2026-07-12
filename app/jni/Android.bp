@@ -19,3 +19,94 @@ cc_library_shared {
     ],
     cflags: ["-Wno-unused-parameter"],
 }
+
+filegroup {
+    name: "phhims_webrtc_aec3_sources",
+    srcs: [
+        "webrtc-aec3/api/*.cc",
+        "webrtc-aec3/audio_processing/*.cc",
+        "webrtc-aec3/audio_processing/*.c",
+        "webrtc-aec3/audio_processing/aec3/*.cc",
+        "webrtc-aec3/audio_processing/include/*.cc",
+        "webrtc-aec3/audio_processing/logging/*.cc",
+        "webrtc-aec3/audio_processing/resampler/*.cc",
+        "webrtc-aec3/audio_processing/utility/cascaded_biquad_filter.cc",
+        "webrtc-aec3/audio_processing/utility/ooura_fft.cc",
+        "webrtc-aec3/base/system_wrappers/source/*.c",
+        "webrtc-aec3/base/system_wrappers/source/*.cc",
+        "webrtc-aec3/base/rtc_base/memory/*.cc",
+        "webrtc-aec3/base/rtc_base/*.cc",
+        "webrtc-aec3/base/rtc_base/strings/*.cc",
+        "webrtc-aec3/base/rtc_base/system/*.cc",
+        "webrtc-aec3/base/jsoncpp/src/lib_json/*.cpp",
+    ],
+    exclude_srcs: [
+        "webrtc-aec3/**/*test.cc",
+        "webrtc-aec3/**/*unittest.cc",
+        "webrtc-aec3/**/*_avx2.cc",
+        "webrtc-aec3/**/*_mips.cc",
+        "webrtc-aec3/**/*_neon.cc",
+        "webrtc-aec3/**/*_sse2.cc",
+        "webrtc-aec3/base/system_wrappers/source/cpu_features_linux.c",
+    ],
+}
+
+filegroup {
+    name: "phhims_webrtc_aec3_sse2_sources",
+    srcs: ["webrtc-aec3/audio_processing/**/*_sse2.cc"],
+}
+
+cc_library_shared {
+    name: "libwebrtc_aec_jni",
+    srcs: [
+        "webrtc_aec_jni.cpp",
+        ":phhims_webrtc_aec3_sources",
+    ],
+    arch: {
+        x86: {
+            srcs: [":phhims_webrtc_aec3_sse2_sources"],
+        },
+        x86_64: {
+            srcs: [":phhims_webrtc_aec3_sse2_sources"],
+        },
+    },
+    local_include_dirs: [
+        "webrtc-aec3",
+        "webrtc-aec3/api",
+        "webrtc-aec3/base",
+        "webrtc-aec3/base/rtc_base",
+        "webrtc-aec3/base/system_wrappers/include",
+        "webrtc-aec3/base/abseil",
+        "webrtc-aec3/base/jsoncpp/include",
+        "webrtc-aec3/audio_processing",
+        "webrtc-aec3/audio_processing/aec3",
+        "webrtc-aec3/audio_processing/include",
+        "webrtc-aec3/audio_processing/logging",
+        "webrtc-aec3/audio_processing/resampler",
+        "webrtc-aec3/audio_processing/utility",
+    ],
+    header_libs: ["jni_headers"],
+    shared_libs: [
+        "liblog",
+        "libm",
+    ],
+    static_libs: [
+        "cpufeatures",
+    ],
+    cpp_std: "c++20",
+    rtti: true,
+    cflags: [
+        "-DWEBRTC_ANDROID",
+        "-DWEBRTC_LINUX",
+        "-DWEBRTC_POSIX",
+        "-DNDEBUG",
+        "-Wno-deprecated-declarations",
+        "-Wno-unused-parameter",
+        "-Wno-unused-variable",
+    ],
+    cppflags: [
+        "-fexceptions",
+        "-Wno-deprecated-volatile",
+        "-Wno-implicit-fallthrough",
+    ],
+}

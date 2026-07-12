@@ -7,13 +7,14 @@ import android.telephony.Rlog
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
-object SipUplinkAudioLoop {
+internal object SipUplinkAudioLoop {
     fun run(
         logTag: String,
         audioRecord: AudioRecord,
         bufferSize: Int,
         encoder: MediaCodec,
         audioCodec: NegotiatedAudioCodec,
+        echoCancellation: SipEchoCancellationSession,
         callStopped: AtomicBoolean,
         callGeneration: AtomicInteger,
         generation: Int,
@@ -38,6 +39,9 @@ object SipUplinkAudioLoop {
         var firstPacket = true
         var realFrameCount = 0
         val buffer = ByteArray(bufferSize)
+        val aecOutput = ByteArray(
+            bufferSize + (audioCodec.sampleRate / 100 * 2),
+        )
 
         while (true) {
             if (callStopped.get() || callGeneration.get() != generation) break
@@ -47,11 +51,28 @@ object SipUplinkAudioLoop {
             if (callStopped.get() || callGeneration.get() != generation) break
             if (nRead <= 0) continue
 
+            val aecSize = echoCancellation.processCapture(
+                pcm = buffer,
+                sizeBytes = nRead,
+                output = aecOutput,
+                generation = generation,
+            )
+            val encodeBuffer: ByteArray
+            val encodeSize: Int
+            if (aecSize == SipEchoCancellationSession.CAPTURE_BYPASS) {
+                encodeBuffer = buffer
+                encodeSize = nRead
+            } else {
+                if (aecSize == 0) continue
+                encodeBuffer = aecOutput
+                encodeSize = aecSize
+            }
+
             SipUplinkAudioEncoder.queuePcmInput(
                 logTag = logTag,
                 encoder = encoder,
-                buffer = buffer,
-                size = nRead,
+                buffer = encodeBuffer,
+                size = encodeSize,
                 gainQ8 = gainQ8,
                 logInput = realFrameCount < 5,
             )

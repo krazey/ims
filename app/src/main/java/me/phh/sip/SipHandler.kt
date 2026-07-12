@@ -3665,12 +3665,19 @@ fun onWfcDisabled(reason: String) {
         val audioRecord = capture.audioRecord
         val minBufferSize = capture.bufferSize
         val prevAudioMode = capture.previousAudioMode
+        // Start with live microphone capture, not early-media playout. AEC3's
+        // external-delay counters must not inherit pre-answer render history.
+        echoCancellation.start(
+            sampleRateHz = audioCodec.sampleRate,
+            generation = generation,
+        )
         SipUplinkAudioLoop.run(
             logTag = TAG,
             audioRecord = audioRecord,
             bufferSize = minBufferSize,
             encoder = encoder,
             audioCodec = audioCodec,
+            echoCancellation = echoCancellation,
             callStopped = callStopped,
             callGeneration = callGeneration,
             generation = generation,
@@ -3695,6 +3702,10 @@ fun onWfcDisabled(reason: String) {
                     realFrameCount = frameCount,
                 )
             },
+        )
+        echoCancellation.stop(
+            generation = generation,
+            reason = "uplink capture ended",
         )
         SipUplinkAudioCleanup.cleanup(
             logTag = TAG,
@@ -5847,6 +5858,7 @@ fun onWfcDisabled(reason: String) {
             audioTrack = audioTrack,
             audioCodec = audioCodec,
             buffers = downlinkPlayoutBuffers,
+            echoCancellation = echoCancellation,
             callStopped = callStopped,
             callGeneration = callGeneration,
             generation = generation,
@@ -5918,6 +5930,10 @@ fun onWfcDisabled(reason: String) {
                 decoder = decoder,
                 downlinkPlayoutBuffers = downlinkPlayoutBuffers,
                 generation = gen,
+            )
+            echoCancellation.stop(
+                generation = gen,
+                reason = "downlink receive ended",
             )
             SipDownlinkAudioCleanup.cleanup(
                 logTag = TAG,
@@ -6000,6 +6016,7 @@ fun onWfcDisabled(reason: String) {
     // fresh RTP timestamp even if the normal uplink encoder timestamp stalls.
     private val rtpDtmfTimestampSamples = AtomicInteger(0)
 
+    private val echoCancellation = SipEchoCancellationSession(TAG)
     private val prAckWaitTracker = PrackWaitTracker()
     private val remoteHeldCallIdsLock = Object()
     private val remoteHeldCallIds = mutableSetOf<String>()

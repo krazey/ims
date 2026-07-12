@@ -2,3 +2,6 @@
 	path = app/jni/rnnoise
 	url = https://github.com/amikhasenko/rnnoise
 	branch = android-build
+[submodule "app/jni/webrtc-aec3"]
+	path = app/jni/webrtc-aec3
+	url = https://github.com/ewan-xu/AEC3.git
