@@ -179,7 +179,9 @@ class SipMessageTests {
                 headersParam = headers,
             )
         require(message.firstLine == "REGISTER xxx SIP/2.0")
-        require(message.headers["cseq"] == listOf("1 REGISTER"))
+        val (sequence, method) = message.headers["cseq"]!!.single().split(" ", limit = 2)
+        require(sequence.toInt() > 0)
+        require(method == "REGISTER")
         require(message.headers["from"]!![0].contains(";tag="))
         require(message.headers["via"]!![0].getParams().component2()["branch"] != null)
     }

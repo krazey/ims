@@ -257,6 +257,14 @@ Use the Soong/LineageOS build. This is the intended build path.
 
 `Android.bp` builds `PhhIms` as a privileged platform-signed app using `platform_apis: true`, so it can access the internal telephony/IMS APIs required by `MmTelFeature`, `ImsConfigImplBase`, `Rlog`, and friends.
 
+The JVM regression tests also require a full private-platform API stub matching
+the target build. Point Gradle at the generated framework stub/classes JAR from
+that AOSP or LineageOS build; a public or `current/system` SDK JAR is not enough:
+
+```sh
+./gradlew -PplatformApiJar=/path/to/platform-apis.jar testDebugUnitTest
+```
+
 No Gradle build or public SDK modification is needed for production ROM builds.
 
 For a standalone Gradle build, `build.sh` no longer uses bundled signing
