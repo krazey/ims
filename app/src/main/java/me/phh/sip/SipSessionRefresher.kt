@@ -63,7 +63,10 @@ internal class SipSessionRefresher(
         val selection = SipSessionTimerNegotiation.selectionFromHeaders(
             headers = headers,
             defaultRefresher = defaultRefresher,
-        ) ?: return
+        ) ?: run {
+            cancel(callId, "Session-Expires omitted")
+            return
+        }
         update(callId, selection, localRefresher)
     }
 
@@ -94,9 +97,9 @@ internal class SipSessionRefresher(
             attempt = 0,
             mode = if (localRefresh) Mode.LOCAL_REFRESH else Mode.PEER_EXPIRY,
             delayMs = if (localRefresh) {
-                refreshDelayMs(selection.intervalSeconds)
+                SipSessionTimerSchedule.localRefreshDelayMs(selection.intervalSeconds)
             } else {
-                peerExpiryDelayMs(selection.intervalSeconds)
+                SipSessionTimerSchedule.peerExpiryDelayMs(selection.intervalSeconds)
             },
         )
     }
@@ -319,13 +322,4 @@ internal class SipSessionRefresher(
         )
     }
 
-    private fun refreshDelayMs(intervalSeconds: Int): Long =
-        intervalSeconds.coerceAtLeast(MIN_INTERVAL_SECONDS).toLong() * 500L
-
-    private fun peerExpiryDelayMs(intervalSeconds: Int): Long {
-        val intervalMs =
-            intervalSeconds.coerceAtLeast(MIN_INTERVAL_SECONDS).toLong() * 1_000L
-        val earlyTerminationMs = minOf(32_000L, intervalMs / 3L)
-        return intervalMs - earlyTerminationMs
-    }
 }

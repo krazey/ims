@@ -124,9 +124,9 @@ internal object SipSessionTimerNegotiation {
         }
 
         if (responseRefresher == "uas") {
-            Rlog.w(
+            Rlog.d(
                 logTag,
-                "Peer selected local session refresher; periodic local refresh is not yet supported",
+                "Peer selected local session refresher",
             )
         }
 
