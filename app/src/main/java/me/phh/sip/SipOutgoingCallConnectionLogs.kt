@@ -27,6 +27,13 @@ internal object SipOutgoingCallConnectionLogs {
     ): String =
         "Outgoing call connected after remote RTP: callId=$callId reason=$reason"
 
+    fun duplicateConnectedNotifyLog(
+        callId: String,
+        reason: String,
+    ): String =
+        "Ignoring duplicate outgoing connected notification: " +
+            "callId=${callId.ifBlank { "<blank>" }} reason=$reason"
+
     fun postAnswerRtpTimeoutLog(
         timeoutMs: Long,
         callId: String,

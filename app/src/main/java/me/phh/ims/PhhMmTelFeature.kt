@@ -57,7 +57,7 @@ private fun ServiceState.phhIwlanRegistrationForIms(): NetworkRegistrationInfo? 
 private fun ServiceState.isIwlanReadyForPhhIms(): Boolean {
     val iwlanRegistration = phhIwlanRegistrationForIms() ?: return false
 
-    val iwlanRegistered = iwlanRegistration.isNetworkRegistered
+    val iwlanRegistered = iwlanRegistration.isRegistered
 
     val iwlanRat =
         iwlanRegistration.accessNetworkTechnology == TelephonyManager.NETWORK_TYPE_IWLAN
@@ -90,7 +90,7 @@ private fun ServiceState.phhImsReadyDebug(
     val iwlanRegistration = phhIwlanRegistrationForIms()
 
     return "state=$state registeredPlmn=$registeredPlmn " +
-        "iwlanReg=${iwlanRegistration?.networkRegistrationState} " +
+        "iwlanRegistered=${iwlanRegistration?.isRegistered} " +
         "iwlanRat=${iwlanRegistration?.accessNetworkTechnology}"
 }
 

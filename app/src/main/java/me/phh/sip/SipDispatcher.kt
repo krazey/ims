@@ -118,7 +118,7 @@ internal class SipDispatcher(
             throw e
         }
 
-        Rlog.d(tag, "Received ${msg.safeLogSummary()}")
+        Rlog.d(tag, "Received ${msg?.safeLogSummary() ?: "end-of-stream"}")
 
         if (msg is SipResponse) {
             return handleResponse(msg)

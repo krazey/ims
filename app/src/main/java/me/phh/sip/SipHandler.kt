@@ -1207,14 +1207,15 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
             android.telephony.AccessNetworkConstants.TRANSPORT_TYPE_WLAN,
         )
 
-        val iwlanReady =
-            iwlanRegistration?.isNetworkRegistered == true &&
-                iwlanRegistration.accessNetworkTechnology == TelephonyManager.NETWORK_TYPE_IWLAN
+        val iwlanReady = iwlanRegistration?.let { registration ->
+            registration.isRegistered &&
+                registration.accessNetworkTechnology == TelephonyManager.NETWORK_TYPE_IWLAN
+        } == true
 
         Rlog.d(
             TAG,
             "WFC Wi-Fi preferred IWLAN readiness: ready=$iwlanReady " +
-                "reg=${iwlanRegistration?.networkRegistrationState} " +
+                "registered=${iwlanRegistration?.isRegistered} " +
                 "rat=${iwlanRegistration?.accessNetworkTechnology}",
         )
         return iwlanReady
@@ -2633,7 +2634,7 @@ fun onWfcDisabled(reason: String) {
             null
         } ?: return false
 
-        return iwlanInfo.isNetworkRegistered &&
+        return iwlanInfo.isRegistered &&
             iwlanInfo.accessNetworkTechnology == TelephonyManager.NETWORK_TYPE_IWLAN
     }
 
@@ -3821,11 +3822,10 @@ fun onWfcDisabled(reason: String) {
         val key = "${callId.ifBlank { "<blank>" }}|$reason"
         if (!outgoingConnectedDuplicateLogKeys.add(key)) return
 
-        if (callId.isBlank()) {
-            logDuplicateOutgoingConnectedOnce("", reason)
-        } else {
-            logDuplicateOutgoingConnectedOnce(callId, reason)
-        }
+        Rlog.d(
+            TAG,
+            SipOutgoingCallConnectionLogs.duplicateConnectedNotifyLog(callId, reason),
+        )
     }
 
     private fun maybeNotifyOutgoingCallConnected(call: Call, reason: String) {
@@ -7958,7 +7958,7 @@ fun onWfcDisabled(reason: String) {
         val isInDialogInvite = existingCall != null &&
             request.headers["from"]?.any { it.contains(";tag=", ignoreCase = true) } == true &&
             request.headers["to"]?.any { it.contains(";tag=", ignoreCase = true) } == true
-        if (isInDialogInvite) {
+        if (isInDialogInvite && existingCall != null) {
             return handleInDialogInvite(request, existingCall, incomingResponseWriter)
         }
         handleDuplicateIncomingInviteForExistingDialog(
