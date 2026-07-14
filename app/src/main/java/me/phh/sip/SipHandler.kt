@@ -746,19 +746,21 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
     private fun isEmergencyDialStringForNormalIms(normalizedNumber: String): Boolean {
         if (normalizedNumber.isBlank()) return false
 
-        if (carrierSettings.isFallbackEmergencyDialString(normalizedNumber)) {
-            return true
-        }
-
-        return try {
+        val platformResult = try {
             subTelephonyManager.isEmergencyNumber(normalizedNumber)
         } catch (t: Throwable) {
             try {
                 telephonyManager.isEmergencyNumber(normalizedNumber)
             } catch (t2: Throwable) {
-                false
+                null
             }
         }
+        if (platformResult != null) return platformResult
+
+        // Only consult an explicit operator overlay when the platform service
+        // is unavailable. A global emergency list can misclassify ordinary
+        // short codes in another country and force an unnecessary CS fallback.
+        return carrierSettings.isFallbackEmergencyDialString(normalizedNumber)
     }
 
     fun shouldForceCsfbForOutgoingDialString(number: String): Boolean {

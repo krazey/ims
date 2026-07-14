@@ -29,7 +29,6 @@
                  applications and must reside in the /system/priv-app/ or /product/priv-app/
             folder to grant the appropriate permissions... -->
         <meta-data android:name="android.telephony.ims.MMTEL_FEATURE" android:value="true"/>
-        <meta-data android:name="android.telephony.ims.EMERGENCY_MMTEL_FEATURE" android:value="true"/>
         <intent-filter>
             <action android:name="android.telephony.ims.ImsService" />
         </intent-filter>

@@ -83,7 +83,7 @@ data class SipCarrierPolicy(
     val outgoingInviteShape: OutgoingInviteShape = OutgoingInviteShape.DEFAULT,
     val securityClientAlgs: List<String> = DEFAULT_SECURITY_CLIENT_ALGS,
     val securityClientEalgs: List<String> = DEFAULT_SECURITY_CLIENT_EALGS,
-    val fallbackEmergencyDialStrings: Set<String> = DEFAULT_FALLBACK_EMERGENCY_DIAL_STRINGS,
+    val fallbackEmergencyDialStrings: Set<String> = emptySet(),
     val publicNumberNormalizationPolicy: SipPublicNumberNormalizationPolicy =
         SipPublicNumberNormalizationPolicy(),
     val registrationRecoveryPolicy: SipRegistrationRecoveryPolicy = SipRegistrationRecoveryPolicy(),
@@ -207,16 +207,6 @@ data class SipCarrierPolicy(
         private const val SINGTEL_HOME_REALM = "ims.mnc001.mcc525.3gppnetwork.org"
         private const val SINGTEL_STOCK_REALM = "ims.singtel.com"
         private const val SINGTEL_STOCK_SMSC = "+6596197777"
-
-        val DEFAULT_FALLBACK_EMERGENCY_DIAL_STRINGS = setOf(
-            "000", // AU and others
-            "110", // DE police and others
-            "112", // EU/common emergency
-            "118",
-            "119",
-            "911", // NANP/common emergency
-            "999", // UK/common emergency
-        )
 
         fun normalizedMncForPhoneContext(mnc: String): String =
             mnc.trim().trimStart('0').ifBlank { "0" }.padStart(3, '0')

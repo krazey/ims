@@ -56,4 +56,16 @@ class SipCarrierPolicyOverlayTest {
         require(settings.mcc.isEmpty())
         require(settings.mnc.isEmpty())
     }
+
+    @Test
+    fun `emergency fallback is opt in per carrier`() {
+        val base = SipCarrierPolicy.defaultFor("001", "001")
+        require(!base.isFallbackEmergencyDialString("911"))
+
+        val resolved = SipCarrierPolicyOverlay(
+            stringArrays = mapOf("fallback_emergency_dial_strings" to listOf("911")),
+        ).applyTo(base)
+
+        require(resolved.isFallbackEmergencyDialString("911"))
+    }
 }
