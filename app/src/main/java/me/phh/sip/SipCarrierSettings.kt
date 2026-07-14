@@ -1,15 +1,17 @@
 //SPDX-License-Identifier: GPL-2.0
 package me.phh.sip
 
+import android.content.Context
+import android.telephony.TelephonyManager
 import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN
 import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_LTE
 
 /**
  * Carrier-specific IMS behavior for the resolved home operator.
  *
- * This is intentionally an in-code policy table for now. It gives PhhIms the
- * same shape as AOSP ImsStack carrier_config defaults/overrides without adding
- * an XML/resource loader before the policy surface has stabilized.
+ * Code defines safe typed defaults. Operator exceptions are loaded from
+ * res/xml/sip_carrier_policies.xml and selected by MCC/MNC and Android carrier
+ * ID, following the same defaults-plus-overlays model as AOSP CarrierConfig.
  */
 
 data class SipRegistrationRecoveryPolicy(
@@ -222,64 +224,8 @@ data class SipCarrierPolicy(
         fun defaultFor(mcc: String, mnc: String): SipCarrierPolicy =
             SipCarrierPolicy(mcc = mcc, mnc = mnc)
 
-        fun forHomeOperator(mcc: String, mnc: String): SipCarrierPolicy {
-            val mccMnc = mcc + mnc
-            return when (mccMnc) {
-                "219010" -> defaultFor(mcc, mnc).copy(
-                    // A1 HR needs stock access-network headers on REGISTER and
-                    // does not require the optional reg-event SUBSCRIBE to mark
-                    // IMS voice ready.
-                    registerExtraHeaders = mapOf(
-                        "P-Access-Network-Info" to listOf("3GPP-E-UTRAN-FDD"),
-                        "P-Visited-Network-ID" to listOf("\"ims.mnc010.mcc219.3gppnetwork.org\""),
-                    ),
-                    subscribeRegEvent = false,
-                )
-
-                "232005" -> defaultFor(mcc, mnc).copy(
-                    // 3 AT service code 333 is not a normal IMS MMTel target.
-                    forceCsfbDialStrings = setOf("333"),
-                )
-
-                "286002" -> defaultFor(mcc, mnc).copy(
-                    // Vodafone TR confirmed short service codes as plain TEL
-                    // and needs access-tech PANI on outgoing INVITE.
-                    plainTelShortCodes = setOf("542"),
-                    outgoingPaniPolicy = OutgoingPaniPolicy.REGISTRATION_ACCESS_TECH,
-                )
-
-                "401077" -> defaultFor(mcc, mnc).copy(
-                    // KZ IMS exposes +7 mobile/public numbers without the
-                    // country code on HD calls and rejects outgoing TEL URIs
-                    // built from that local form.
-                    publicNumberNormalizationPolicy =
-                        SipPublicNumberNormalizationPolicy(
-                            kazakhstanMobileWithoutCountryCode = true,
-                        ),
-                )
-
-                "450006" -> defaultFor(mcc, mnc).copy(
-                    // LG U+ can only do UDP and requires non-session AKA.
-                    isControlSocketUdp = true,
-                    requireNonsessAka = true,
-                )
-
-                "525001" -> defaultFor(mcc, mnc).copy(
-                    // SingTel needs a stock-like compact outgoing INVITE/SMS
-                    // target and restricted security offer.
-                    outgoingInviteShape = OutgoingInviteShape.SINGTEL_COMPACT_STOCK,
-                    securityClientAlgs = listOf("hmac-sha-1-96"),
-                    securityClientEalgs = listOf("null"),
-                )
-
-                "208010" -> defaultFor(mcc, mnc).copy(
-                    // 20810 can do TCP and UDP; force UDP for testing.
-                    isControlSocketUdp = true,
-                )
-
-                else -> defaultFor(mcc, mnc)
-            }
-        }
+        fun forHomeOperator(mcc: String, mnc: String): SipCarrierPolicy =
+            defaultFor(mcc, mnc)
     }
 }
 
@@ -293,6 +239,7 @@ data class SipCarrierSettings(
     val mcc: String,
     val mnc: String,
     val policy: SipCarrierPolicy,
+    val carrierId: Int = TelephonyManager.UNKNOWN_CARRIER_ID,
 ) {
     val mccMnc: String get() = policy.mccMnc
     val isControlSocketUdp: Boolean get() = policy.isControlSocketUdp
@@ -368,15 +315,46 @@ data class SipCarrierSettings(
         fun normalizedMncForPhoneContext(mnc: String): String =
             SipCarrierPolicy.normalizedMncForPhoneContext(mnc)
 
+        private fun parseSimOperator(simOperator: String): Pair<String, String> {
+            val numeric = simOperator.trim().filter { it.isDigit() }
+            if (numeric.length !in 5..6) return "" to ""
+            val mcc = numeric.take(3)
+            val rawMnc = numeric.drop(3)
+            return mcc to rawMnc.padStart(3, '0')
+        }
+
         fun fromSimOperator(simOperator: String): SipCarrierSettings {
-            val mcc = simOperator.substring(0 until 3)
-            val mnc = simOperator.substring(3).let { if (it.length == 2) "0$it" else it }
-            val policy = SipCarrierPolicy.forHomeOperator(mcc, mnc)
+            val (mcc, mnc) = parseSimOperator(simOperator)
+            val policy = SipCarrierPolicy.defaultFor(mcc, mnc)
 
             return SipCarrierSettings(
                 mcc = mcc,
                 mnc = mnc,
                 policy = policy,
+            )
+        }
+
+        fun fromContext(
+            context: Context,
+            telephonyManager: TelephonyManager,
+            simOperator: String,
+        ): SipCarrierSettings {
+            val (mcc, mnc) = parseSimOperator(simOperator)
+            val carrierId = try {
+                telephonyManager.simCarrierId
+            } catch (_: Throwable) {
+                TelephonyManager.UNKNOWN_CARRIER_ID
+            }
+            val policy = SipCarrierPolicyXml.apply(
+                context = context,
+                base = SipCarrierPolicy.defaultFor(mcc, mnc),
+                carrierId = carrierId,
+            )
+            return SipCarrierSettings(
+                mcc = mcc,
+                mnc = mnc,
+                policy = policy,
+                carrierId = carrierId,
             )
         }
     }

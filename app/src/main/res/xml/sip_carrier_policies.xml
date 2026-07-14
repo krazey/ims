@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PhhIms carrier policy overlays.
+
+  Entries may select by normalized six-digit MCC/MNC, Android carrierId, or
+  both. Use match="any" for carrier-ID selection with an MCC/MNC fallback.
+  General matches are applied before more specific matches. Canonical IDs are
+  from AOSP TelephonyProvider's latest_carrier_id/carrier_list.textpb.
+  The element
+  shapes follow CarrierConfig's data-oriented boolean/string/array style so
+  exceptions can be reviewed and updated without adding executable branches.
+-->
+<carrier-policies version="1">
+    <!-- AOSP canonical carrierId 1530; keep the quirk PLMN-scoped for now. -->
+    <carrier mccmnc="219010" name="A1 Croatia">
+        <boolean name="subscribe_reg_event" value="false" />
+        <register-header
+            name="P-Access-Network-Info"
+            value="3GPP-E-UTRAN-FDD" />
+        <register-header
+            name="P-Visited-Network-ID"
+            value="&quot;ims.mnc010.mcc219.3gppnetwork.org&quot;" />
+    </carrier>
+
+    <!-- AOSP canonical carrierId 1344. -->
+    <carrier mccmnc="232005" name="3 Austria">
+        <string-array name="force_csfb_dial_strings">
+            <item value="333" />
+        </string-array>
+    </carrier>
+
+    <!-- AOSP canonical carrierId 1736. -->
+    <carrier mccmnc="286002" name="Vodafone Turkey">
+        <string-array name="plain_tel_short_codes">
+            <item value="542" />
+        </string-array>
+        <string name="outgoing_pani_policy" value="REGISTRATION_ACCESS_TECH" />
+    </carrier>
+
+    <!-- AOSP canonical carrierId 1986. -->
+    <carrier mccmnc="401077" name="Tele2 Kazakhstan">
+        <boolean name="kazakhstan_mobile_without_country_code" value="true" />
+    </carrier>
+
+    <!-- AOSP canonical carrierId 1892. -->
+    <carrier mccmnc="450006" name="LG Uplus Korea">
+        <boolean name="control_socket_udp" value="true" />
+        <boolean name="require_nonsess_aka" value="true" />
+    </carrier>
+
+    <!-- AOSP canonical carrierId 31. -->
+    <carrier mccmnc="525001" name="Singtel Singapore">
+        <string name="outgoing_invite_shape" value="SINGTEL_COMPACT_STOCK" />
+        <string-array name="security_client_algs">
+            <item value="hmac-sha-1-96" />
+        </string-array>
+        <string-array name="security_client_ealgs">
+            <item value="null" />
+        </string-array>
+    </carrier>
+
+    <!-- AOSP canonical carrierId 27; intentionally limited to PLMN 20810. -->
+    <carrier mccmnc="208010" name="SFR France UDP test policy">
+        <boolean name="control_socket_udp" value="true" />
+    </carrier>
+</carrier-policies>

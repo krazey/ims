@@ -104,7 +104,11 @@ class SipHandler(
         slotId = slotId,
         subId = subId,
     )
-    private val carrierSettings = SipCarrierSettings.fromSimOperator(homeOperatorForIms)
+    private val carrierSettings = SipCarrierSettings.fromContext(
+        context = ctxt,
+        telephonyManager = subTelephonyManager,
+        simOperator = homeOperatorForIms,
+    )
     private val mcc = carrierSettings.mcc
     private val mnc = carrierSettings.mnc
     private val imsi = subTelephonyManager.subscriberId
