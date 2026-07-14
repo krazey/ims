@@ -108,7 +108,7 @@ internal object SipUpdateResponseWriter {
         reply: SipResponse,
         logTag: String,
     ): Boolean {
-        Rlog.d(logTag, "Replying to UPDATE with $reply")
+        Rlog.d(logTag, "Replying to UPDATE with ${reply.safeLogSummary()}")
         return SipMessageWriter.write(
             updateResponseWriter,
             reply.toByteArray(),
@@ -162,7 +162,7 @@ internal object SipUpdateResponseWriter {
             statusString = "Ringing",
             headersParam = myHeaders2,
         )
-        Rlog.d(logTag, "Sending $msg2")
+        Rlog.d(logTag, "Sending ${msg2.safeLogSummary()}")
         SipMessageWriter.write(
             updateResponseWriter,
             msg2.toByteArray(),

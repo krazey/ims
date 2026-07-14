@@ -26,7 +26,11 @@ class PhhImsSms(val slotId: Int) : ImsSmsImplBase() {
     ) {
         try {
             // called when android tries to send a sms?
-            Rlog.d(TAG, "$slotId sendSms $token, $messageRef, $format, $smsc")
+            Rlog.d(
+                TAG,
+                "$slotId sendSms token=$token ref=$messageRef format=$format " +
+                    "smscProvided=${!smsc.isNullOrBlank()} pduBytes=${pdu.size}",
+            )
             if (format != "3gpp") {
                 // we only know how to send 3gpp formatted sms.
                 // Android should do that correctly, error if not that will

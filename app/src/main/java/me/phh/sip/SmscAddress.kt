@@ -50,7 +50,7 @@ internal fun normalizeSmscNumber(raw: String?): String? {
         ?: return null
 
     decodeSmscScaPdu(trimmed)?.let { decoded ->
-        Rlog.d(SMSC_TAG, "Decoded SMSC SCA-PDU $trimmed -> $decoded")
+        Rlog.d(SMSC_TAG, "Decoded SMSC SCA-PDU digits=${decoded.length}")
         return decoded
     }
 

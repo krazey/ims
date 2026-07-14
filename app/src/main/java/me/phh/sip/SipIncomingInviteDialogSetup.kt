@@ -35,8 +35,12 @@ internal object SipIncomingInviteDialogSetup {
     fun incomingCallNotificationExtras(
         incomingCallId: String,
         selectedAudioCodec: NegotiatedAudioCodec,
+        presentationRestricted: Boolean,
     ): Map<String, String> =
-        mapOf("call-id" to incomingCallId) + SipAudioCodecNegotiator.audioCodecExtras(selectedAudioCodec)
+        mapOf(
+            "call-id" to incomingCallId,
+            "presentation-restricted" to presentationRestricted.toString(),
+        ) + SipAudioCodecNegotiator.audioCodecExtras(selectedAudioCodec)
 
     fun installAbortDecision(
         incomingCallId: String,

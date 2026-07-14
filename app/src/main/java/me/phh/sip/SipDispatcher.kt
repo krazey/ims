@@ -118,7 +118,7 @@ internal class SipDispatcher(
             throw e
         }
 
-        Rlog.d(tag, "RObject() message $msg")
+        Rlog.d(tag, "Received ${msg.safeLogSummary()}")
 
         if (msg is SipResponse) {
             return handleResponse(msg)
@@ -173,7 +173,7 @@ internal class SipDispatcher(
             headersParam = responseHeaders,
         )
 
-        Rlog.d(tag, "Replying back with $reply")
+        Rlog.d(tag, "Replying with ${reply.safeLogSummary()}")
         return SipMessageWriter.write(
             tag = tag,
             writer = writer,

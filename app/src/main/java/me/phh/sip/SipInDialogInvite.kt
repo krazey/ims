@@ -41,7 +41,11 @@ internal object SipInDialogInvite {
         logTag: String,
     ): InDialogInviteSdpOffer? {
         val sdp = request.body.toString(Charsets.UTF_8).split("[\r\n]+".toRegex()).toList()
-        Rlog.d(logTag, "Handling in-dialog INVITE: callId=$callId cseq=$cseq sdp=$sdp")
+        Rlog.d(
+            logTag,
+            "Handling in-dialog INVITE: callId=$callId cseq=$cseq " +
+                "sdpLines=${sdp.size} bodyBytes=${request.body.size}",
+        )
 
         fun sdpElement(command: String): String? {
             val v = sdp.firstOrNull { it.startsWith("$command=") } ?: return null
@@ -387,7 +391,10 @@ internal object SipInDialogInvite {
             headersParam = responseHeaders,
             body = answerSdp,
         )
-        Rlog.d(logTag, "Replying to in-dialog INVITE without creating a new incoming call: $response")
+        Rlog.d(
+            logTag,
+            "Replying to in-dialog INVITE with ${response.safeLogSummary()}",
+        )
         return response
     }
 

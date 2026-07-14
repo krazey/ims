@@ -144,7 +144,11 @@ internal object SipOutgoingInviteRequestBuilder {
             // keep the generic IMS phone-context.
             "tel:$normalizedPhoneNumber;phone-context=${carrierSettings.phoneContextForLocalTelUri(realm)}"
         }
-        Rlog.d(logTag, "Outgoing dial target raw=$phoneNumber normalized=$normalizedPhoneNumber uri=$to")
+        Rlog.d(
+            logTag,
+            "Built outgoing dial target global=${normalizedPhoneNumber.startsWith("+")} " +
+                "shortCode=${carrierSettings.isLocalShortCode(normalizedPhoneNumber)}",
+        )
         val sipInstance = "<urn:gsma:imei:${imei.substring(0, 8)}-${imei.substring(8, 14)}-0>"
         val contactTel =
             """<sip:$myTel@$localEndpoint;transport=$transport>;expires=7200;+sip.instance="$sipInstance";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.smsip;audio"""

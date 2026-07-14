@@ -599,7 +599,7 @@ class PhhMmTelFeature(
             }
 
             override fun accept(callType: Int, profile: ImsStreamMediaProfile) {
-                Rlog.d(TAG, "Accepting call with callType $callType profile $profile")
+                Rlog.d(TAG, "Accepting outgoing call session callType=$callType")
             }
 
             override fun isInCall(): Boolean {
@@ -607,7 +607,7 @@ class PhhMmTelFeature(
             }
 
             override fun start(callee: String, profile: ImsCallProfile) {
-            Rlog.d(TAG, "Starting call with $callee profile $profile")
+            Rlog.d(TAG, "Starting outgoing IMS call")
 
             if (!sipHandler.isReadyForOutgoingCall()) {
                 Rlog.w(TAG, "Rejecting outgoing call while IMS is reconnecting/not ready")
@@ -860,6 +860,7 @@ class PhhMmTelFeature(
     private fun makeVoiceCallProfile(
         callerNumber: String? = null,
         audioQuality: Int = ImsStreamMediaProfile.AUDIO_QUALITY_AMR,
+        presentationRestricted: Boolean = false,
     ): ImsCallProfile {
         val callProfile = ImsCallProfile(
             ImsCallProfile.SERVICE_TYPE_NORMAL,
@@ -875,7 +876,16 @@ class PhhMmTelFeature(
         )
 
         val normalizedCaller = callerNumber?.trim()?.takeIf { it.isNotEmpty() }
-        if (normalizedCaller != null) {
+        if (presentationRestricted) {
+            callProfile.setCallExtraInt(
+                ImsCallProfile.EXTRA_OIR,
+                ImsCallProfile.OIR_PRESENTATION_RESTRICTED,
+            )
+            callProfile.setCallExtraInt(
+                ImsCallProfile.EXTRA_CNAP,
+                ImsCallProfile.OIR_PRESENTATION_RESTRICTED,
+            )
+        } else if (normalizedCaller != null) {
             callProfile.setCallExtra(ImsCallProfile.EXTRA_OI, normalizedCaller)
             callProfile.setCallExtra(ImsCallProfile.EXTRA_CNA, normalizedCaller)
             callProfile.setCallExtra(ImsCallProfile.EXTRA_DISPLAY_TEXT, normalizedCaller)
@@ -1015,9 +1025,10 @@ sipHandler.imsFailureCallback = {
         sipHandler.onIncomingCall = { handle: Object, from: String, extras: Map<String, String> -> 
             val callerNumber = from.trim()
             val callProfile = makeVoiceCallProfile(
-            callerNumber,
-            audioQualityFromSipExtras(extras),
-        )
+                callerNumber = callerNumber,
+                audioQuality = audioQualityFromSipExtras(extras),
+                presentationRestricted = extras["presentation-restricted"] == "true",
+            )
             val incomingCallId = extras["call-id"]!!
             val isCallWaitingSession = extras["call-waiting"] == "true"
             val incomingSession = object: ImsCallSessionImplBase() {
@@ -1080,7 +1091,7 @@ sipHandler.imsFailureCallback = {
                 }
 
                 override fun start(callee: String, profile: ImsCallProfile) {
-                    Rlog.d(TAG, "Starting call with $callee")
+                    Rlog.d(TAG, "Ignoring start() on an incoming IMS session")
                 }
 
                 override fun accept(callType: Int, profile: ImsStreamMediaProfile) {
@@ -1091,7 +1102,7 @@ sipHandler.imsFailureCallback = {
                                 "callId=$incomingCallId profile=$profile",
                         )
                     } else {
-                        Rlog.d(TAG, "Accepting call with profile $profile")
+                        Rlog.d(TAG, "Accepting incoming call")
                     }
                     sipHandler.acceptCall(incomingCallId) { accepted ->
                         if (!accepted) {
@@ -1395,7 +1406,7 @@ sipHandler.imsFailureCallback = {
     }
 
     override fun shouldProcessCall(numbers: Array<out String>): Int {
-        Rlog.d(TAG, "Should process call? ${numbers.contentToString()}")
+        Rlog.d(TAG, "Should process call count=${numbers.size}")
 
         val csfbNumber = numbers.firstOrNull { number ->
             this::sipHandler.isInitialized &&

@@ -72,12 +72,11 @@ internal object SipOutgoingInviteInitialSend {
             logTag,
             "Outgoing INVITE send context " +
                 debugContext(
-                    "callId=$outgoingInviteCallId cseq=${msg.headers["cseq"]?.getOrNull(0)} " +
-                        "to=$destination raw=$phoneNumber normalized=$normalizedPhoneNumber " +
-                        "rtp=${rtpSocket.localAddress}:${rtpSocket.localPort} sdpBytes=${body.size}"
+                    "${msg.safeLogSummary()} rtpLocalPort=${rtpSocket.localPort} " +
+                        "sdpBytes=${body.size}"
                 ),
         )
-        Rlog.d(logTag, "Sending $msg")
+        Rlog.d(logTag, "Sending ${msg.safeLogSummary()}")
         writeBytes(msg.toByteArray())
     }
 }

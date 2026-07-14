@@ -78,7 +78,7 @@ internal object SipOutgoingInviteFinalAckState {
 
 
     fun sendingFinalInviteAckLog(request: SipRequest): String =
-        "Sending $request"
+        "Sending ${request.safeLogSummary()}"
 
 
     fun outgoingConfirmedDialogAfterAckLog(

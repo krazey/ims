@@ -136,7 +136,7 @@ internal object SipOutgoingDialogSdp {
         "Starting outgoing media threads from precondition 183 SDP"
 
     fun sendingPreconditionUpdateLog(request: SipRequest): String =
-        "Sending $request"
+        "Sending ${request.safeLogSummary()}"
 
     fun preconditionUpdateWriteLabel(): String =
         "SipHandler msg2"

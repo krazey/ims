@@ -12,21 +12,17 @@ object RegistrationCellInfoLogger {
     fun log(logTag: String, telephonyManager: TelephonyManager) {
         for (cell in telephonyManager.getAllCellInfo()) {
             if (cell is CellInfoLte) {
-                val cellIdentity = cell.cellIdentity
                 val cellSignalStrength = cell.cellSignalStrength
-                Rlog.d(logTag, "LTE cell: ${cellIdentity.ci}, ${cellIdentity.pci}, ${cellIdentity.tac}, ${cellIdentity.mccString}, ${cellIdentity.mncString}, ${cellSignalStrength.dbm}")
+                Rlog.d(logTag, "LTE registration signalDbm=${cellSignalStrength.dbm}")
             } else if (cell is CellInfoNr) {
-                val cellIdentity = cell.cellIdentity
                 val cellSignalStrength = cell.cellSignalStrength
-                Rlog.d(logTag, "NR cell: ${cellIdentity.operatorAlphaLong}, ${cellIdentity.operatorAlphaShort}, ${cellIdentity}")
+                Rlog.d(logTag, "NR registration signalDbm=${cellSignalStrength.dbm}")
             } else if (cell is CellInfoWcdma) {
-                val cellIdentity = cell.cellIdentity
                 val cellSignalStrength = cell.cellSignalStrength
-                Rlog.d(logTag, "WCDMA cell: ${cellIdentity.cid}, ${cellIdentity.lac}, ${cellIdentity.mccString}, ${cellIdentity.mncString}, ${cellSignalStrength.dbm}")
+                Rlog.d(logTag, "WCDMA registration signalDbm=${cellSignalStrength.dbm}")
             } else if (cell is CellInfoGsm) {
-                val cellIdentity = cell.cellIdentity
                 val cellSignalStrength = cell.cellSignalStrength
-                Rlog.d(logTag, "GSM cell: ${cellIdentity.cid}, ${cellIdentity.lac}, ${cellIdentity.mccString}, ${cellIdentity.mncString}, ${cellSignalStrength.dbm}")
+                Rlog.d(logTag, "GSM registration signalDbm=${cellSignalStrength.dbm}")
             }
         }
     }

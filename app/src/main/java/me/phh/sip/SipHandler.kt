@@ -2758,7 +2758,7 @@ fun onWfcDisabled(reason: String) {
             forceSecurityAgreementNullEalg = false,
         )
         val registerBytesWithNetworkHeaders = addCarrierRegisterNetworkHeaders(msg.toByteArray())
-        Rlog.d(TAG, "Sending ${registerBytesWithNetworkHeaders.toString(Charsets.US_ASCII)}")
+        Rlog.d(TAG, "Sending ${msg.safeLogSummary()}")
         if (!writeSipBytesWithFlush(writer, "REGISTER", registerBytesWithNetworkHeaders)) {
             reconnectIms("REGISTER write failed")
             return
@@ -2802,7 +2802,7 @@ fun onWfcDisabled(reason: String) {
             imei = imei,
         )
         setResponseCallback(msg.headers["call-id"]!![0], ::subscribeCallback)
-        Rlog.d(TAG, "Sending $msg")
+        Rlog.d(TAG, "Sending ${msg.safeLogSummary()}")
         writeSipBytesWithFlush(socket.gWriter(), "SipHandler msg", msg.toByteArray())
     }
 
@@ -3419,6 +3419,7 @@ fun onWfcDisabled(reason: String) {
         val responseWriter: OutputStream,
         val ringingResponseBytes: ByteArray,
         val callerNumber: String,
+        val callerPresentationRestricted: Boolean,
         val remoteContact: String,
         val incomingOffer: IncomingInviteOffer?,
         val setupState: IncomingInviteDialogSetupState?,
@@ -4239,7 +4240,7 @@ fun onWfcDisabled(reason: String) {
                     Call-Id: $callId
                     """.toSipHeadersMap()
             )
-        Rlog.d(TAG, "Sending $msg")
+        Rlog.d(TAG, "Sending ${msg.safeLogSummary()}")
         if (!writeSipBytesWithFlush(
                 socket.gWriter(),
                 "outgoing PRACK callId=$callId",
@@ -6619,12 +6620,15 @@ fun onWfcDisabled(reason: String) {
         )
         val ringingResponse = SipIncomingInviteDialogSetup.plainRingingResponse(waitingHeaders)
         val ringingBytes = ringingResponse.toByteArray()
+        val waitingIdentity = SipIncomingIdentityResolver.resolve(request.headers)
         val callerNumber = waitingOffer?.callerNumber
-            ?: normalizeIncomingCallerNumberForFramework(
-                extractCallerNumberFromHeader(
-                    request.headers["from"]?.getOrNull(0).orEmpty(),
-                ).trim(),
-            )
+            ?: waitingIdentity.identityHeader
+                ?.let(::extractCallerNumberFromHeader)
+                ?.let(::normalizeIncomingCallerNumberForFramework)
+                .orEmpty()
+        val callerPresentationRestricted =
+            waitingOffer?.callerPresentationRestricted
+                ?: waitingIdentity.presentationRestricted
         val remoteContact = request.headers["contact"]?.getOrNull(0)
             ?.let { extractDestinationFromContact(it) }
             .orEmpty()
@@ -6636,6 +6640,7 @@ fun onWfcDisabled(reason: String) {
             responseWriter = incomingResponseWriter,
             ringingResponseBytes = ringingBytes,
             callerNumber = callerNumber,
+            callerPresentationRestricted = callerPresentationRestricted,
             remoteContact = remoteContact,
             incomingOffer = waitingOffer,
             setupState = waitingSetupState,
@@ -6659,6 +6664,7 @@ fun onWfcDisabled(reason: String) {
                 "call-id" to incomingCallId,
                 "call-waiting" to "true",
                 "call-waiting-media-prepared" to (waitingSetupState != null).toString(),
+                "presentation-restricted" to callerPresentationRestricted.toString(),
             ) + SipAudioCodecNegotiator.audioCodecExtras(waitingCodec),
         )
 
@@ -6789,7 +6795,7 @@ fun onWfcDisabled(reason: String) {
             ackDestination,
             ackHeaders,
         )
-        Rlog.d(TAG, "Sending ACK for $label: $ack")
+        Rlog.d(TAG, "Sending ACK for $label: ${ack.safeLogSummary()}")
         return writeSipBytesWithFlush(socket.gWriter(), "$label ACK", ack.toByteArray())
     }
 
@@ -7459,7 +7465,11 @@ fun onWfcDisabled(reason: String) {
             SipIncomingInviteFinalResponses.localRejectTerminationReason(),
         )
         val response = SipIncomingInviteFinalResponses.localRejectResponse(pending.callHeaders)
-        Rlog.w(TAG, "Rejecting pending waiting INVITE: callId=${pending.callId} reason=$reason response=$response")
+        Rlog.w(
+            TAG,
+            "Rejecting pending waiting INVITE: callId=${pending.callId} " +
+                "reason=$reason ${response.safeLogSummary()}",
+        )
         writeSipBytesWithFlush(
             pending.responseWriter,
             "pending waiting INVITE reject callId=${pending.callId}",
@@ -7621,6 +7631,7 @@ fun onWfcDisabled(reason: String) {
         request: SipRequest,
         incomingCallId: String,
         callerNumber: String,
+        callerPresentationRestricted: Boolean,
         selectedAudioCodec: NegotiatedAudioCodec,
         amrTrack: Int,
         amrTrackDesc: String,
@@ -7672,6 +7683,7 @@ fun onWfcDisabled(reason: String) {
             SipIncomingInviteDialogSetup.incomingCallNotificationExtras(
                 incomingCallId = incomingCallId,
                 selectedAudioCodec = selectedAudioCodec,
+                presentationRestricted = callerPresentationRestricted,
             ),
         )
 
@@ -7828,6 +7840,7 @@ fun onWfcDisabled(reason: String) {
                 request = request,
                 incomingCallId = incomingCallId,
                 callerNumber = incomingOffer.callerNumber,
+                callerPresentationRestricted = incomingOffer.callerPresentationRestricted,
                 selectedAudioCodec = incomingOffer.selectedAudioCodec,
                 amrTrack = incomingOffer.amrTrack,
                 amrTrackDesc = incomingOffer.amrTrackDesc,

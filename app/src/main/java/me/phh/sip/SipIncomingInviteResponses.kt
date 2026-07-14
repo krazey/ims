@@ -114,7 +114,7 @@ internal object SipIncomingInviteToHeaderTagger {
         // Important for tel: URIs: without <> the appended ;tag can be parsed as a TEL URI
         // parameter instead of a SIP To header parameter, and the network may ignore our 200 OK.
         val toWithTag = request.headers["to"]!!.map { h -> SipHeaderTagger.addTag(h, localToTag) }
-        Rlog.d(logTag, "Incoming To header normalized/tagged: ${request.headers["to"]!!} -> $toWithTag")
+        Rlog.d(logTag, "Incoming To header normalized and tagged")
         return toWithTag
     }
 }
@@ -272,7 +272,7 @@ internal object SipIncomingInviteFinalResponses {
         response: SipResponse,
         hasIncomingResponseWriter: Boolean,
     ): String =
-        "Sending $response via incomingResponseWriter=$hasIncomingResponseWriter"
+        "Sending ${response.safeLogSummary()} via incomingResponseWriter=$hasIncomingResponseWriter"
 
     fun acceptedFinalResponseWriteContext(acceptedCallId: String): String =
         "incoming INVITE final 200 OK callId=$acceptedCallId"
@@ -314,7 +314,7 @@ internal object SipIncomingInviteFinalResponses {
         response: SipResponse,
         hasIncomingResponseWriter: Boolean,
     ): String =
-        "Sending $response via incomingResponseWriter=$hasIncomingResponseWriter"
+        "Sending ${response.safeLogSummary()} via incomingResponseWriter=$hasIncomingResponseWriter"
 
     fun localRejectCleanupReason(): String = "call cleanup"
 

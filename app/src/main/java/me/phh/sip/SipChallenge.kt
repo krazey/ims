@@ -24,8 +24,10 @@ fun sipAkaChallenge(tm: TelephonyManager, nonceB64: String): SipAkaResult {
     return when (val result = sipAkaChallengeForRegistration(tm, nonceB64)) {
         is SipAkaChallengeResult.Success -> result.akaResult
         is SipAkaChallengeResult.SynchronizationFailure -> {
-            val autsHex = result.auts.joinToString("") { "%02x".format(it.toInt() and 0xff) }
-            throw Exception("AKA Challenge from SIP returned synchronization failure AUTS=$autsHex")
+            throw Exception(
+                "AKA Challenge from SIP returned synchronization failure " +
+                    "AUTS length=${result.auts.size}",
+            )
         }
     }
 }
@@ -42,7 +44,7 @@ fun sipAkaChallengeForRegistration(
     val challengeBytes = listOf(rand.size.toByte()) + rand + autn.size.toByte() + autn
     val challengeArray = challengeBytes.toByteArray()
     val challenge = Base64.encodeToString(challengeArray, Base64.NO_WRAP)
-    Rlog.d(TAG, "Challenge B64 is $challenge")
+    Rlog.d(TAG, "Requesting USIM AKA authentication challengeBytes=${challengeArray.size}")
     val responseB64 = tm.getIccAuthentication(
         TelephonyManager.APPTYPE_USIM,
         TelephonyManager.AUTHTYPE_EAP_AKA,
@@ -56,11 +58,10 @@ fun sipAkaChallengeForRegistration(
 
     val responseTag = response[0].toInt() and 0xff
     if (responseTag != 0xdb) {
-        val responseHex = response.joinToString("") { "%02x".format(it.toInt() and 0xff) }
         Rlog.w(
             TAG,
             "AKA challenge from SIP failed tag=0x${responseTag.toString(16)} " +
-                    "len=${response.size} response=$responseHex",
+                    "len=${response.size}",
         )
 
         if (responseTag == 0xdc) {
@@ -75,13 +76,11 @@ fun sipAkaChallengeForRegistration(
                 )
             }
             val auts = response.copyOfRange(2, 2 + autsLen)
-            val autsHex = auts.joinToString("") { "%02x".format(it.toInt() and 0xff) }
             val trailing = response.copyOfRange(2 + autsLen, response.size)
-            val trailingHex = trailing.joinToString("") { "%02x".format(it.toInt() and 0xff) }
             Rlog.w(
                 TAG,
                 "AKA synchronization failure/AUTS returned by USIM " +
-                        "autsLen=$autsLen auts=$autsHex trailing=$trailingHex",
+                        "autsLen=$autsLen trailingBytes=${trailing.size}",
             )
             return SipAkaChallengeResult.SynchronizationFailure(auts)
         }
@@ -102,7 +101,7 @@ fun sipAkaChallengeForRegistration(
     Rlog.d(TAG, "ikLen $ikLen")
     val ik = (0 until ikLen).map { responseStream.nextByte() }.toList()
 
-    Rlog.d(TAG, "Got res $res ck $ck ik $ik")
+    Rlog.d(TAG, "USIM AKA authentication succeeded resLen=$resLen ckLen=$ckLen ikLen=$ikLen")
     return SipAkaChallengeResult.Success(
         SipAkaResult(res = res.toByteArray(), ck = ck.toByteArray(), ik = ik.toByteArray())
     )
@@ -123,7 +122,7 @@ data class SipAkaDigestSess(
     var digest: String = ""
 
     init {
-        Rlog.d(TAG, "H1 = $H1, H2 = REGISTER:$uri = $H2")
+        Rlog.d(TAG, "Prepared session AKA digest inputs")
         increment()
     }
 
@@ -131,7 +130,7 @@ data class SipAkaDigestSess(
         nonceCount = "%08d".format(nonceCount.toInt() + 1)
         cnonce = randomBytes(8).toHex() // 16 bytes on some traces
         digest = "$H1:$nonceB64:$nonceCount:$cnonce:auth:$H2".toMD5()
-        Rlog.d(TAG, "chall $H1:$nonceB64:$nonceCount:$cnonce:auth:$H2 $digest")
+        Rlog.d(TAG, "Computed session AKA digest nc=$nonceCount")
     }
 
     override fun toString(): String =
@@ -155,7 +154,7 @@ data class SipAkaSynchronizationDigestSess(
     var digest: String = ""
 
     init {
-        Rlog.d(TAG, "AUTS H1 = $H1, H2 = REGISTER:$uri = $H2")
+        Rlog.d(TAG, "Prepared session AKA synchronization digest inputs")
         increment()
     }
 
@@ -165,7 +164,7 @@ data class SipAkaSynchronizationDigestSess(
         // RFC 3310 section 3.4: when auts is present, calculate the
         // credentials using an empty password instead of RES.
         digest = "$H1:$nonceB64:$nonceCount:$cnonce:auth:$H2".toMD5()
-        Rlog.d(TAG, "AUTS chall $H1:$nonceB64:$nonceCount:$cnonce:auth:$H2 $digest")
+        Rlog.d(TAG, "Computed session AKA synchronization digest nc=$nonceCount")
     }
 
     override fun toString(): String =
@@ -189,13 +188,13 @@ data class SipAkaDigest(
     var digest: String = ""
 
     init {
-        Rlog.d(TAG, "H1 = $H1, H2 = REGISTER:$uri = $H2")
+        Rlog.d(TAG, "Prepared non-session AKA digest inputs")
         increment()
     }
 
     fun increment() {
         digest = "$H1:$nonceB64:$H2".toMD5()
-        Rlog.d(TAG, "chall $H1:$nonceB64:$H2 $digest")
+        Rlog.d(TAG, "Computed non-session AKA digest")
     }
 
     override fun toString(): String =
@@ -217,7 +216,7 @@ data class SipAkaSynchronizationDigest(
     var digest: String = ""
 
     init {
-        Rlog.d(TAG, "AUTS H1 = $H1, H2 = REGISTER:$uri = $H2")
+        Rlog.d(TAG, "Prepared non-session AKA synchronization digest inputs")
         increment()
     }
 
@@ -225,7 +224,7 @@ data class SipAkaSynchronizationDigest(
         // RFC 3310 section 3.4: when auts is present, calculate the
         // credentials using an empty password instead of RES.
         digest = "$H1:$nonceB64:$H2".toMD5()
-        Rlog.d(TAG, "AUTS chall $H1:$nonceB64:$H2 $digest")
+        Rlog.d(TAG, "Computed non-session AKA synchronization digest")
     }
 
     override fun toString(): String =
@@ -234,4 +233,3 @@ data class SipAkaSynchronizationDigest(
                 quoteDigestOpaque(opaque) +
                 ",auts=\"$autsB64\""
 }
-

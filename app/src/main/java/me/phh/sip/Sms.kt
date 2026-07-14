@@ -78,7 +78,7 @@ fun ByteArray.SipSmsDecode(): SipSms? {
 
             // signed bytes cast to int can be negative...
             val pduLen = buf.get().toUByte().toInt()
-            Rlog.d(TAG, "SMS from $destAddr to $origAddr, pduLen $pduLen")
+            Rlog.d(TAG, "Decoded SMS address fields and payload length=$pduLen")
             val pdu = ByteArray(1 + origAddrLen + pduLen)
             pdu[0] = origAddrLen.toByte()
             origAddrBuf.copyInto(pdu, 1)

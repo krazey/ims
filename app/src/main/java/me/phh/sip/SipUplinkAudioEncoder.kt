@@ -88,7 +88,7 @@ object SipUplinkAudioEncoder {
             encoder.releaseOutputBuffer(outBufIdx, false)
 
             if (currentRealFrameCount == 0) {
-                Rlog.d(logTag, "First encoder output: size=${outBufInfo.size} raw=${encoderData.take(32).joinToString(" ") { "%02x".format(it) }}")
+                Rlog.d(logTag, "First encoder output: size=${outBufInfo.size}")
             }
 
             var bufPos = 0

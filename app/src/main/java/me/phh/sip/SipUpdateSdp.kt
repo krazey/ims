@@ -34,7 +34,11 @@ internal object SipUpdateSdpOfferParser {
             .split("[\\r\\n]+".toRegex())
             .filter { it.isNotBlank() }
 
-        Rlog.d(logTag, "Handling UPDATE SDP offer: callId=$requestCallId cseq=$requestCseq sdp=$sdp")
+        Rlog.d(
+            logTag,
+            "Handling UPDATE SDP offer: callId=$requestCallId cseq=$requestCseq " +
+                "lines=${sdp.size} bodyBytes=${request.body.size}",
+        )
 
         fun sdpElement(command: String): String? {
             val v = sdp.firstOrNull { it.startsWith("$command=") } ?: return null
@@ -58,7 +62,7 @@ internal object SipUpdateSdpOfferParser {
             Rlog.w(
                 logTag,
                 "Rejecting UPDATE with incomplete media address/payloads: " +
-                    "callId=$requestCallId cseq=$requestCseq c=$sdpConnectionData m=$sdpMedia",
+                    "callId=$requestCallId cseq=$requestCseq",
             )
             return null
         }
@@ -283,7 +287,7 @@ internal object SipUpdateRtpEndpointConnector {
                 )
             }
         } catch (t: Throwable) {
-            Rlog.w(logTag, "Failed to connect RTP socket from UPDATE to ${rtpRemoteAddr}:${rtpRemotePort} callId=$requestCallId", t)
+            Rlog.w(logTag, "Failed to connect RTP socket from UPDATE callId=$requestCallId", t)
         }
     }
 }

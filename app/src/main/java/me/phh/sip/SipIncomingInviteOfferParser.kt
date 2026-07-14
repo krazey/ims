@@ -16,7 +16,7 @@ internal object SipIncomingInviteSdpParser {
         logTag: String,
     ): IncomingInviteSdpBasics {
         val sdp = request.body.toString(Charsets.UTF_8).split("[\r\n]+".toRegex()).toList()
-        Rlog.d(logTag, "Split SDP into $sdp")
+        Rlog.d(logTag, "Parsed incoming SDP lines=${sdp.size} bytes=${request.body.size}")
         fun sdpElement(command: String): String? {
             val v = sdp.firstOrNull { it.startsWith("$command=")} ?: return null
             return v.substring(2)
@@ -218,6 +218,7 @@ internal object SipIncomingInviteMediaSelector {
 
 internal data class IncomingInviteOffer(
     val callerNumber: String,
+    val callerPresentationRestricted: Boolean,
     val sdp: List<String>,
     val rtpRemoteAddr: InetAddress,
     val rtpRemotePort: String,
@@ -241,6 +242,7 @@ internal object SipIncomingInviteOfferBuilder {
     fun build(
         request: SipRequest,
         callerNumber: String,
+        callerPresentationRestricted: Boolean,
         sdpBasics: IncomingInviteSdpBasics,
         capabilities: IncomingInviteCapabilities,
         mediaSelection: IncomingInviteMediaSelection,
@@ -250,6 +252,7 @@ internal object SipIncomingInviteOfferBuilder {
 
         return IncomingInviteOffer(
             callerNumber = callerNumber,
+            callerPresentationRestricted = callerPresentationRestricted,
             sdp = sdpBasics.sdp,
             rtpRemoteAddr = sdpBasics.rtpRemoteAddr,
             rtpRemotePort = sdpBasics.rtpRemotePort,
@@ -281,11 +284,13 @@ internal object SipIncomingInviteOfferParser {
         amrWbMediaCodecAvailable: Boolean,
         extractCallerNumberFromHeader: (String) -> String,
     ): IncomingInviteOffer? {
-        val fromHeaders = request.headers["from"]
-        val callerNumber = extractCallerNumberFromHeader(fromHeaders!![0]!!)
+        val incomingIdentity = SipIncomingIdentityResolver.resolve(request.headers)
+        val callerNumber = incomingIdentity.identityHeader
+            ?.let(extractCallerNumberFromHeader)
+            .orEmpty()
         Rlog.d(
             logTag,
-            "Incoming call from $callerNumber rawFrom=${fromHeaders[0]} " +
+            "Incoming identity resolved restricted=${incomingIdentity.presentationRestricted} " +
                 "callId=$incomingCallId hasIncomingResponseWriter=$hasIncomingResponseWriter",
         )
 
@@ -314,10 +319,10 @@ internal object SipIncomingInviteOfferParser {
         return SipIncomingInviteOfferBuilder.build(
             request = request,
             callerNumber = callerNumber,
+            callerPresentationRestricted = incomingIdentity.presentationRestricted,
             sdpBasics = incomingSdpBasics,
             capabilities = incomingCapabilities,
             mediaSelection = incomingMediaSelection,
         )
     }
 }
-
