@@ -4192,8 +4192,12 @@ fun onWfcDisabled(reason: String) {
         // PRACK is a request within the early dialog; route set comes from Record-Route
         // in the provisional response (RFC 3262 §4, RFC 3261 §12.1.2), not from the
         // registration Service-Route stored in commonHeaders.
-        val dialogRoute = resp.headers["record-route"]
-        val headers = if (dialogRoute != null) commonHeaders + ("route" to dialogRoute) else commonHeaders
+        val dialogRoute = outgoingDialogRouteSet(resp.headers)
+        val headers = if (dialogRoute.isNotEmpty()) {
+            commonHeaders + ("route" to dialogRoute)
+        } else {
+            commonHeaders - "route"
+        }
         val msg =
             SipRequest(
                 SipMethod.PRACK,
@@ -4812,13 +4816,19 @@ fun onWfcDisabled(reason: String) {
     ) {
         // Update dialog route set from the confirmed 200 OK (RFC 3261 §12.1.2)
         // so that subsequent in-dialog requests (BYE, UPDATE) use the correct route.
-        val rrFrom200Ok = response.headers["record-route"]
+        val rrFrom200Ok = recordRouteValues(response.headers)
+        val routeSetFrom200Ok = outgoingDialogRouteSet(response.headers)
         val remoteTargetFrom200Ok = response.headers["contact"]?.getOrNull(0)
             ?.let { extractDestinationFromContact(it) }
         currentCall = currentCall?.let { confirmedCall ->
             var confirmedHeaders = confirmedCall.callHeaders
-            if (rrFrom200Ok != null) {
-                confirmedHeaders = confirmedHeaders + ("record-route" to rrFrom200Ok) + ("route" to rrFrom200Ok)
+            if (rrFrom200Ok.isNotEmpty()) {
+                confirmedHeaders = confirmedHeaders +
+                    ("record-route" to rrFrom200Ok) +
+                    ("route" to routeSetFrom200Ok)
+            } else {
+                confirmedHeaders -= "record-route"
+                confirmedHeaders -= "route"
             }
             // INVITE uses its original CSeq for ACK. Keep later in-dialog requests
             // past any PRACK/UPDATE/BYE CSeq already allocated while the call was pending.
@@ -5165,11 +5175,20 @@ fun onWfcDisabled(reason: String) {
             dtmfTrackDesc = answer.dialogDtmfTrackDesc,
             // Update from/to/call-id based on the response we got to include the remote tag.
             // Keep the response Record-Route too; later local BYE/UPDATE must use it as Route.
-            callHeaders = myHeaders - "require" - "content-type" +
+            callHeaders = myHeaders - "require" - "content-type" - "route" - "record-route" +
                 ("from" to response.headers["from"]!!) +
                 ("to" to response.headers["to"]!!) +
                 ("call-id" to response.headers["call-id"]!!) +
-                (response.headers["record-route"]?.let { mapOf("record-route" to it, "route" to it) } ?: emptyMap()),
+                recordRouteValues(response.headers).let { recordRoute ->
+                    if (recordRoute.isEmpty()) {
+                        emptyMap()
+                    } else {
+                        mapOf(
+                            "record-route" to recordRoute,
+                            "route" to outgoingDialogRouteSet(response.headers),
+                        )
+                    }
+                },
             rtpRemoteAddr = answer.rtpRemoteAddr,
             rtpRemotePort = answer.rtpRemotePortInt,
             rtpSocket = rtpSocket,

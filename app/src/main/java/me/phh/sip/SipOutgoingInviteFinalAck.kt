@@ -24,8 +24,13 @@ internal object SipOutgoingInviteFinalAck {
             ?.let { extractDestinationFromContact(it) } ?: fallbackTarget
         // ACK is a dialog request; route set comes from Record-Route in the 200 OK
         // (RFC 3261 §12.1.2), not from the registration Service-Route in myHeaders.
-        val dialogRoute = response.headers["record-route"]
-        val ackHeaders = if (dialogRoute != null) myHeaders + ("route" to dialogRoute) else myHeaders
+        val dialogRoute = outgoingDialogRouteSet(response.headers)
+        val dialogHeaders = myHeaders - "route" - "record-route"
+        val ackHeaders = if (dialogRoute.isNotEmpty()) {
+            dialogHeaders + ("route" to dialogRoute)
+        } else {
+            dialogHeaders
+        }
         val request =
             SipRequest(
                 SipMethod.ACK,

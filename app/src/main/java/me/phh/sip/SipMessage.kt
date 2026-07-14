@@ -243,8 +243,6 @@ private const val SIP_MAX_HEADER_BYTES = 64 * 1024
 private const val SIP_MAX_BODY_BYTES = 1024 * 1024
 
 private val splitHeader = "^\\s*([^:]+)\\s*:\\s*(.*)$".toRegex()
-private val splitComma = "(<[^>]*>|[^,]+?)+".toRegex()
-
 @OptIn(ExperimentalStdlibApi::class)
 fun sipHeaderOf(line: String): Pair<String, List<SipHeader>>? {
     val (headerRaw, valueRaw) = splitHeader.find(line)?.destructured ?: return null
@@ -267,12 +265,17 @@ fun sipHeaderOf(line: String): Pair<String, List<SipHeader>>? {
         when (header) {
             "allow",
             "contact",
-            "from",
             "p-asserted-identity",
+            "proxy-require",
+            "record-route",
+            "require",
+            "route",
             "security-client",
+            "security-server",
             "security-verify",
             "supported",
-            "to" -> splitComma.findAll(valueRaw).toList().map { it.groupValues[0].trim() }
+            "unsupported",
+            "via" -> splitSipListHeader(valueRaw)
             else -> listOf(valueRaw)
         }
 

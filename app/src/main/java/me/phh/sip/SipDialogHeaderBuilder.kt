@@ -40,8 +40,7 @@ object SipDialogHeaderBuilder {
             // Confirmed outgoing dialogs store their route set as Route after the final 200 OK.
             mapOf("route" to route)
         } ?: call.callHeaders["record-route"]?.let { rr ->
-            // Incoming dialogs still keep the original Record-Route from the INVITE. For the
-            // single-route O2/S9 case we can use it directly as Route for local in-dialog requests.
+            // A UAS uses the incoming INVITE Record-Route values in request order.
             mapOf("route" to rr)
         } ?: emptyMap()
         val securityHeaders = commonHeaders["security-verify"]?.let { securityVerify ->
