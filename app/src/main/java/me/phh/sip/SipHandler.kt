@@ -5871,51 +5871,74 @@ fun onWfcDisabled(reason: String) {
         Rlog.d(TAG, "Downlink RTP receive started: codec=${audioCodec.name}/${audioCodec.sampleRate} gen=$generation")
         val audioManager = ctxt.getSystemService(android.media.AudioManager::class.java)
         val prevDecodeAudioMode = audioManager.mode
-        if (prevDecodeAudioMode != AudioManager.MODE_IN_COMMUNICATION) {
-            Rlog.d(TAG, "Decode thread forcing MODE_IN_COMMUNICATION before AudioTrack: was=$prevDecodeAudioMode")
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        var audioTrack: android.media.AudioTrack? = null
+        var decoder: android.media.MediaCodec? = null
+        var decoderWorker: SipDownlinkAudioDecoderWorker? = null
+        var downlinkPlayoutBuffers: SipDownlinkPcmPlayoutBuffers? = null
+        var downlinkPlayoutThread: Thread? = null
+
+        try {
+            // Create the codec before changing global audio state or starting
+            // playout. Codec construction is the most device-dependent step.
+            decoder = SipAudioCodecFactory.createStartedDecoder(
+                audioCodec = audioCodec,
+            )
+
+            if (prevDecodeAudioMode != AudioManager.MODE_IN_COMMUNICATION) {
+                Rlog.d(TAG, "Decode thread forcing MODE_IN_COMMUNICATION before AudioTrack: was=$prevDecodeAudioMode")
+                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            }
+            audioTrack = SipAudioTrackFactory.createVoiceCallTrack(
+                audioCodec = audioCodec,
+            )
+            audioTrack.play()
+            // PhhIms downlink PCM playout smoother: decouple RTP receive jitter
+            // from AudioTrack writes. IVR/transfer gateways can burst packets or
+            // send sparse SID/CN frames after DTMF; writing only when RTP arrives
+            // lets AudioTrack underrun and sounds like heavy stutter. Keep a tiny
+            // 20ms playout loop and feed silence when the decoder has no PCM ready.
+            downlinkPlayoutBuffers = SipDownlinkPcmPlayoutBuffers.create(audioCodec)
+            downlinkPlayoutThread = SipDownlinkPcmPlayout.start(
+                logTag = TAG,
+                audioTrack = audioTrack,
+                audioCodec = audioCodec,
+                buffers = downlinkPlayoutBuffers,
+                echoCancellation = echoCancellation,
+                callStopped = callStopped,
+                callGeneration = callGeneration,
+                generation = generation,
+            )
+
+            decoderWorker = SipDownlinkAudioDecoderWorker(
+                logTag = TAG,
+                decoder = decoder,
+                pcmQueue = downlinkPlayoutBuffers.pcmQueue,
+                callStopped = callStopped,
+                callGeneration = callGeneration,
+                generation = generation,
+            )
+
+            return DownlinkAudioRuntime(
+                audioTrack = audioTrack,
+                decoder = decoder,
+                decoderWorker = decoderWorker,
+                playoutBuffers = downlinkPlayoutBuffers,
+                playoutThread = downlinkPlayoutThread,
+                previousAudioMode = prevDecodeAudioMode,
+            )
+        } catch (t: Throwable) {
+            SipDownlinkAudioCleanup.cleanupStartupFailure(
+                logTag = TAG,
+                context = ctxt,
+                audioTrack = audioTrack,
+                decoder = decoder,
+                decoderWorker = decoderWorker,
+                playoutBuffers = downlinkPlayoutBuffers,
+                playoutThread = downlinkPlayoutThread,
+                previousAudioMode = prevDecodeAudioMode,
+            )
+            throw t
         }
-        val audioTrack = SipAudioTrackFactory.createVoiceCallTrack(
-            audioCodec = audioCodec,
-        )
-        audioTrack.play()
-        // PhhIms downlink PCM playout smoother: decouple RTP receive jitter
-        // from AudioTrack writes. IVR/transfer gateways can burst packets or
-        // send sparse SID/CN frames after DTMF; writing only when RTP arrives
-        // lets AudioTrack underrun and sounds like heavy stutter. Keep a tiny
-        // 20ms playout loop and feed silence when the decoder has no PCM ready.
-        val downlinkPlayoutBuffers = SipDownlinkPcmPlayoutBuffers.create(audioCodec)
-        val downlinkPlayoutThread = SipDownlinkPcmPlayout.start(
-            logTag = TAG,
-            audioTrack = audioTrack,
-            audioCodec = audioCodec,
-            buffers = downlinkPlayoutBuffers,
-            echoCancellation = echoCancellation,
-            callStopped = callStopped,
-            callGeneration = callGeneration,
-            generation = generation,
-        )
-
-        val decoder = SipAudioCodecFactory.createStartedDecoder(
-            audioCodec = audioCodec,
-        )
-        val decoderWorker = SipDownlinkAudioDecoderWorker(
-            logTag = TAG,
-            decoder = decoder,
-            pcmQueue = downlinkPlayoutBuffers.pcmQueue,
-            callStopped = callStopped,
-            callGeneration = callGeneration,
-            generation = generation,
-        )
-
-        return DownlinkAudioRuntime(
-            audioTrack = audioTrack,
-            decoder = decoder,
-            decoderWorker = decoderWorker,
-            playoutBuffers = downlinkPlayoutBuffers,
-            playoutThread = downlinkPlayoutThread,
-            previousAudioMode = prevDecodeAudioMode,
-        )
     }
 
 
@@ -5954,40 +5977,42 @@ fun onWfcDisabled(reason: String) {
         val gen = callGeneration.get()
         // Receiving thread
         thread {
-            val downlinkRuntime = createDownlinkAudioRuntime(
-                audioCodec = audioCodec,
-                generation = gen,
-            )
-            val audioTrack = downlinkRuntime.audioTrack
-            val decoder = downlinkRuntime.decoder
-            val decoderWorker = downlinkRuntime.decoderWorker
-            val downlinkPlayoutBuffers = downlinkRuntime.playoutBuffers
-            val downlinkPlayoutThread = downlinkRuntime.playoutThread
-            val prevDecodeAudioMode = downlinkRuntime.previousAudioMode
-
-            val receivedCount = runDownlinkRtpReceiveLoop(
-                audioCodec = audioCodec,
-                decoderWorker = decoderWorker,
-                generation = gen,
-            )
-            echoCancellation.stop(
-                generation = gen,
-                reason = "downlink receive ended",
-            )
-            SipDownlinkAudioCleanup.cleanup(
-                logTag = TAG,
-                context = ctxt,
-                audioTrack = audioTrack,
-                decoder = decoder,
-                decoderWorker = decoderWorker,
-                playoutBuffers = downlinkPlayoutBuffers,
-                playoutThread = downlinkPlayoutThread,
-                callStopped = callStopped,
-                callGeneration = callGeneration,
-                generation = gen,
-                receivedCount = receivedCount,
-                previousAudioMode = prevDecodeAudioMode,
-            )
+            var downlinkRuntime: DownlinkAudioRuntime? = null
+            var receivedCount = 0
+            try {
+                downlinkRuntime = createDownlinkAudioRuntime(
+                    audioCodec = audioCodec,
+                    generation = gen,
+                )
+                receivedCount = runDownlinkRtpReceiveLoop(
+                    audioCodec = audioCodec,
+                    decoderWorker = downlinkRuntime.decoderWorker,
+                    generation = gen,
+                )
+            } catch (t: Throwable) {
+                Rlog.e(TAG, "Downlink audio thread failed: gen=$gen", t)
+            } finally {
+                echoCancellation.stop(
+                    generation = gen,
+                    reason = "downlink receive ended",
+                )
+                downlinkRuntime?.let { runtime ->
+                    SipDownlinkAudioCleanup.cleanup(
+                        logTag = TAG,
+                        context = ctxt,
+                        audioTrack = runtime.audioTrack,
+                        decoder = runtime.decoder,
+                        decoderWorker = runtime.decoderWorker,
+                        playoutBuffers = runtime.playoutBuffers,
+                        playoutThread = runtime.playoutThread,
+                        callStopped = callStopped,
+                        callGeneration = callGeneration,
+                        generation = gen,
+                        receivedCount = receivedCount,
+                        previousAudioMode = runtime.previousAudioMode,
+                    )
+                }
+            }
         }
     }
 

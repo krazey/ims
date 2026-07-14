@@ -53,17 +53,21 @@ internal class SipDownlinkAudioDecoderWorker(
         }
     }
 
-    fun stop() {
+    fun stop(timeoutMs: Long = 2_000L): Boolean {
         running.set(false)
         workerThread.interrupt()
         try {
-            workerThread.join(500L)
+            workerThread.join(timeoutMs)
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
         }
         if (workerThread.isAlive) {
-            Rlog.w(logTag, "Downlink decoder worker did not stop promptly")
+            Rlog.w(
+                logTag,
+                "Downlink decoder worker did not stop within ${timeoutMs}ms",
+            )
         }
+        return !workerThread.isAlive
     }
 
     private fun offerPcmFrame(pcm: ByteArray) {
