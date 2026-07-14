@@ -238,7 +238,11 @@ data class SipResponse(
  *  - some headers have parameters split by ;
  *  - headers and parameters are case-insensitive
  */
-private val splitHeader = "^\\s*([^:]+)\\s*:\\s*(.+)$".toRegex()
+private const val SIP_MAX_HEADER_COUNT = 256
+private const val SIP_MAX_HEADER_BYTES = 64 * 1024
+private const val SIP_MAX_BODY_BYTES = 1024 * 1024
+
+private val splitHeader = "^\\s*([^:]+)\\s*:\\s*(.*)$".toRegex()
 private val splitComma = "(<[^>]*>|[^,]+?)+".toRegex()
 
 @OptIn(ExperimentalStdlibApi::class)
@@ -315,31 +319,58 @@ private val splitAuthValue = """^([^=]+)="?([^"]*)"?""".toRegex()
 fun SipHeader.getAuthValues(): Pair<String, Map<String, String?>> =
     splitParams(this, splitAuth, splitAuthValue, false)
 
-fun parseHeaders(sequence: Sequence<String>): SipHeadersMap =
-    sequence.fold(
-        emptyMap<String, List<SipHeader>>(),
-        fold@{ headers, line ->
-            val (header, value) = sipHeaderOf(line) ?: return@fold headers
-            val oldVal = headers.get(header) ?: emptyList<SipHeader>()
-
-            headers + (header to oldVal + value)
+fun parseHeaders(
+    sequence: Sequence<String>,
+    strict: Boolean = false,
+): SipHeadersMap {
+    var count = 0
+    var bytes = 0
+    var headers = emptyMap<String, List<SipHeader>>()
+    sequence.forEach { line ->
+        count++
+        bytes += line.toByteArray(Charsets.US_ASCII).size
+        if (count > SIP_MAX_HEADER_COUNT || bytes > SIP_MAX_HEADER_BYTES) {
+            throw SipParseException(
+                "SIP headers exceed limits: count=$count bytes=$bytes",
+            )
         }
-    )
+
+        val parsed = sipHeaderOf(line)
+        if (parsed == null) {
+            if (strict) throw SipParseException("Malformed SIP header")
+            return@forEach
+        }
+        val (header, value) = parsed
+        val oldValue = headers[header].orEmpty()
+        headers = headers + (header to oldValue + value)
+    }
+    return headers
+}
 
 fun String.toSipHeadersMap(): SipHeadersMap = parseHeaders(this.lines().asSequence())
 
-fun SipReader.parseHeaders(): SipHeadersMap = parseHeaders(this.lineSequence())
+fun SipReader.parseHeaders(): SipHeadersMap = parseHeaders(this.lineSequence(), strict = true)
 
 fun SipReader.parseMessage(): SipMessage? {
     val firstLine = this.readLine() ?: return null
     val headers = this.parseHeaders()
-    val body =
-        headers["content-length"]?.getOrNull(0)?.toInt()?.let { this.readNBytes2(it) }
-            ?: ByteArray(0)
+    val contentLengths = headers["content-length"].orEmpty().map { rawValue ->
+        val value = rawValue.trim().toLongOrNull()
+            ?: throw SipParseException("Invalid Content-Length: $rawValue")
+        if (value !in 0..SIP_MAX_BODY_BYTES.toLong()) {
+            throw SipParseException(
+                "Content-Length outside 0..$SIP_MAX_BODY_BYTES: $value",
+            )
+        }
+        value.toInt()
+    }
+    if (contentLengths.distinct().size > 1) {
+        throw SipParseException("Conflicting Content-Length headers: $contentLengths")
+    }
+    val body = this.readNBytes2(contentLengths.firstOrNull() ?: 0)
     // TODO: parse body depending on content type (e.g. multipart)
-    val firstLineSplit = firstLine.split(" ")
-    when (firstLineSplit[0]) {
-        // TODO: also check last element in line is SIP/2.0?
+    val firstLineSplit = firstLine.trim().split(Regex("\\s+"), limit = 3)
+    when (firstLineSplit.firstOrNull()) {
         "REGISTER",
         "SUBSCRIBE",
         "INVITE",
@@ -350,19 +381,26 @@ fun SipReader.parseMessage(): SipMessage? {
         "OPTIONS",
         "MESSAGE",
         "UPDATE",
-        "NOTIFY" ->
+        "NOTIFY" -> {
+            if (firstLineSplit.size != 3 || firstLineSplit[2] != "SIP/2.0") {
+                throw SipParseException("Malformed SIP request line")
+            }
             return SipRequest(
                 method = SipMethod.valueOf(firstLineSplit[0]),
-                destination = firstLineSplit[1],
+                destination = firstLineSplit[1].takeIf { it.isNotBlank() }
+                    ?: throw SipParseException("SIP request URI is empty"),
                 headersParam = headers,
                 body = body,
                 autofill = false,
             )
+        }
         "SIP/2.0" -> {
-            val code = firstLineSplit.getOrNull(1)?.toInt() ?: return null
+            val code = firstLineSplit.getOrNull(1)?.toIntOrNull()
+                ?.takeIf { it in 100..699 }
+                ?: throw SipParseException("Malformed SIP response status")
             return SipResponse(
                 statusCode = code,
-                statusString = firstLineSplit.slice(2..firstLineSplit.size - 1).joinToString(" "),
+                statusString = firstLineSplit.getOrNull(2).orEmpty(),
                 headersParam = headers,
                 body = body,
                 autofill = false,

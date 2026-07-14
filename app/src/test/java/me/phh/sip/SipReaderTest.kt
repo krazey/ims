@@ -35,6 +35,12 @@ val trailingData =
         .toByteArray() + binaryData
 
 class SipReaderTests {
+    @Test(expected = SipParseException::class)
+    fun `reject oversized physical line`() {
+        val bytes = ("x".repeat(SIP_MAX_HEADER_LINE_BYTES + 1) + "\r\n").toByteArray()
+        bytes.inputStream().sipReader().readLine()
+    }
+
     @Test
     fun `simple read lines`() {
         val reader = simple.inputStream().sipReader()

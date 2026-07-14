@@ -94,6 +94,9 @@ internal class SipDispatcher(
     fun parseMessage(reader: SipReader, writer: OutputStream): Boolean {
         val msg = try {
             reader.parseMessage()
+        } catch (e: SipParseException) {
+            Rlog.w(tag, "Rejecting malformed SIP message: ${e.message}")
+            return false
         } catch (e: SocketException) {
             Rlog.d(tag, "Got exception $e")
             if ("$e" == "java.net.SocketException: Try again") {

@@ -1,132 +1,143 @@
 //SPDX-License-Identifier: GPL-2.0
 package me.phh.sip
 
-import android.telephony.Rlog
 import java.io.BufferedInputStream
+import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.InputStream
+import java.io.PushbackInputStream
 
-/* read helper: BufferedReader is character encoded,
- * but we deal with arbitrary binary content in message bodies
- * so we cannot use it.
- * For similar reason, none of the native reader types can be used,
- * so here's a new one...
- */
+internal const val SIP_MAX_HEADER_LINE_BYTES = 8 * 1024
+
+internal class SipParseException(message: String) : IOException(message)
 
 fun InputStream.sipReader(): SipReader = SipReader(this)
 
-@OptIn(ExperimentalStdlibApi::class)
-class SipReader(private val input: InputStream) : BufferedInputStream(input) {
-    companion object {
-        private const val TAG = "PHH SipReader"
-    }
+/**
+ * Byte-oriented SIP reader.
+ *
+ * SIP bodies may contain arbitrary binary data, so character readers cannot
+ * safely frame a message. A one-byte pushback buffer is enough to inspect the
+ * first byte of the next physical line while unfolding legacy header lines.
+ */
+class SipReader(input: InputStream) : InputStream() {
+    private val input = PushbackInputStream(BufferedInputStream(input), 1)
 
-    //  internal buffer size is not exposed but default is 2k so
-    //  just pick something smaller
-    var markLength = 1024
+    override fun read(): Int = input.read()
 
-    fun continueToNextLine(): Boolean {
-        // peak at next line to decide if we got a continuation or not
-        // since we didn't get an empty line yet there should be more
-        // available to read without extra blocking
-        mark(markLength)
-        var continuation = false
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+        input.read(buffer, offset, length)
+
+    override fun close() = input.close()
+
+    private fun readPhysicalLine(): ByteArray? {
+        val line = ByteArrayOutputStream()
         while (true) {
-            when (read()) {
-                ' '.code,
-                '\t'.code -> {
-                    mark(markLength)
-                    continuation = true
-                }
-                else -> {
-                    reset()
-                    return continuation
-                }
-            }
-        }
-    }
-
-    fun readLine(): String? {
-        // we can use the underlying 'buf' from BufferedInputStream:
-        //  - buf = buffer
-        //  - count = first invalid offset
-        //  - pos = current position in buffer (index of next char to be read)
-        //  - markpos = position when we did mark
-        //  To keep the algorithm simple we just check bytes one at a time
-        //  through read(), then take a slice from buf[markpos..pos]
-        //  adjusting as appropriate. The buffer is thanksfully not used as a
-        //  ring buffer internally so this is safe.
-
-        mark(markLength)
-        var line = ByteArray(0)
-        while (true) {
-            when (read()) {
+            when (val value = input.read()) {
                 -1 -> {
-                    Rlog.d(TAG, "Got end of file/buffer")
-                    // we could try to return whatever we read until this point,
-                    // but that really means we got an invalid message (end of input too early)
-                    // so just return null
-                    return null
+                    if (line.size() == 0) return null
+                    throw SipParseException("SIP line ended before CRLF")
                 }
-                '\n'.code -> {
-                    var lineEnd = pos - 2
-                    if (lineEnd >= markpos && buf[lineEnd] == '\r'.code.toByte()) lineEnd--
-                    if (lineEnd < markpos) return null
-
-                    line += buf.slice(markpos..lineEnd)
-                    if (!continueToNextLine()) break
-                    // check ate extra whitespaces, add a single space to our buffer
-                    // and continue appending to it
-                    line += ' '.code.toByte()
+                '\n'.code -> break
+                else -> {
+                    if (line.size() >= SIP_MAX_HEADER_LINE_BYTES) {
+                        throw SipParseException(
+                            "SIP line exceeds $SIP_MAX_HEADER_LINE_BYTES bytes",
+                        )
+                    }
+                    line.write(value)
                 }
             }
         }
 
-        if (line.size == 0) return null
-
-        return String(line, Charsets.US_ASCII)
+        val bytes = line.toByteArray()
+        return if (bytes.lastOrNull() == '\r'.code.toByte()) {
+            bytes.copyOf(bytes.size - 1)
+        } else {
+            bytes
+        }
     }
 
-    fun readNBytes2(len: Int): ByteArray {
-        // similar to inputStream readNBytes, loop if required
-        // but abort if we did not read full
-        var bytes = ByteArray(len)
-        var read = 0
-        while (read < len) {
-            val n = read(bytes, read, len - read)
-            if (n < 0) throw Exception("Early end of buffer")
-            read += n
+    /**
+     * Reads and unfolds one SIP header/start line. A zero-length physical line
+     * terminates the header section and is represented as null for the
+     * existing lineSequence parser contract.
+     */
+    fun readLine(): String? {
+        val first = readPhysicalLine() ?: return null
+        if (first.isEmpty()) return null
+
+        val unfolded = ByteArrayOutputStream()
+        unfolded.write(first)
+
+        while (true) {
+            var next = input.read()
+            if (next == -1) break
+            if (next != ' '.code && next != '\t'.code) {
+                input.unread(next)
+                break
+            }
+
+            do {
+                next = input.read()
+            } while (next == ' '.code || next == '\t'.code)
+
+            if (next == -1) {
+                throw SipParseException("SIP continuation ended before CRLF")
+            }
+            input.unread(next)
+            val continuation = readPhysicalLine()
+                ?: throw SipParseException("SIP continuation ended before CRLF")
+
+            if (unfolded.size() + 1 + continuation.size > SIP_MAX_HEADER_LINE_BYTES) {
+                throw SipParseException(
+                    "Unfolded SIP line exceeds $SIP_MAX_HEADER_LINE_BYTES bytes",
+                )
+            }
+            unfolded.write(' '.code)
+            unfolded.write(continuation)
+        }
+
+        return unfolded.toString(Charsets.US_ASCII.name())
+    }
+
+    fun readNBytes2(length: Int): ByteArray {
+        if (length < 0) throw SipParseException("Negative SIP body length: $length")
+
+        val bytes = ByteArray(length)
+        var offset = 0
+        while (offset < length) {
+            val read = read(bytes, offset, length - offset)
+            if (read < 0) {
+                throw SipParseException(
+                    "SIP body ended early: expected=$length received=$offset",
+                )
+            }
+            offset += read
         }
         return bytes
     }
 }
 
-// lineSequence copied verbatim from kotlin sources, applies to SipReader.
-// libraries/stdlib/jvm/src/kotlin/io/ReadWrite.kt
-
-public fun SipReader.lineSequence(): Sequence<String> = LinesSequence(this).constrainOnce()
+// lineSequence copied from kotlin sources and adapted to SipReader.
+fun SipReader.lineSequence(): Sequence<String> = LinesSequence(this).constrainOnce()
 
 private class LinesSequence(private val reader: SipReader) : Sequence<String> {
-    override public fun iterator(): Iterator<String> {
-        return object : Iterator<String> {
-            private var nextValue: String? = null
-            private var done = false
+    override fun iterator(): Iterator<String> = object : Iterator<String> {
+        private var nextValue: String? = null
+        private var done = false
 
-            override public fun hasNext(): Boolean {
-                if (nextValue == null && !done) {
-                    nextValue = reader.readLine()
-                    if (nextValue == null) done = true
-                }
-                return nextValue != null
+        override fun hasNext(): Boolean {
+            if (nextValue == null && !done) {
+                nextValue = reader.readLine()
+                if (nextValue == null) done = true
             }
+            return nextValue != null
+        }
 
-            override public fun next(): String {
-                if (!hasNext()) {
-                    throw NoSuchElementException()
-                }
-                val answer = nextValue
-                nextValue = null
-                return answer!!
-            }
+        override fun next(): String {
+            if (!hasNext()) throw NoSuchElementException()
+            return nextValue!!.also { nextValue = null }
         }
     }
 }
