@@ -6761,12 +6761,8 @@ fun onWfcDisabled(reason: String) {
             holdSdp,
         )
 
-        setResponseCallback(callId) { response ->
+        setResponseCallback(callId, inviteCseq, SipMethod.INVITE) { response ->
             val cseq = response.headers["cseq"]?.getOrNull(0).orEmpty()
-            if (!cseq.contains("INVITE", ignoreCase = true)) {
-                Rlog.d(TAG, "Ignoring non-INVITE response while waiting for hold re-INVITE: callId=$callId cseq=$cseq status=${response.statusCode}")
-                return@setResponseCallback false
-            }
             when (response.statusCode) {
                 in 100..199 -> {
                     Rlog.d(TAG, "Call-waiting hold re-INVITE provisional: callId=$callId status=${response.statusCode} cseq=$cseq")
@@ -6819,7 +6815,7 @@ fun onWfcDisabled(reason: String) {
                 holdInvite.toByteArray(),
             )
         ) {
-            removeResponseCallback(callId)
+            removeResponseCallback(callId, inviteCseq, SipMethod.INVITE)
             reconnectIms("call-waiting hold re-INVITE write failed")
             return false
         }
@@ -6988,16 +6984,8 @@ fun onWfcDisabled(reason: String) {
             resumeSdp,
         )
 
-        setResponseCallback(callId) { response ->
+        setResponseCallback(callId, inviteCseq, SipMethod.INVITE) { response ->
             val cseq = response.headers["cseq"]?.getOrNull(0).orEmpty()
-            if (!cseq.contains("INVITE", ignoreCase = true)) {
-                Rlog.d(
-                    TAG,
-                    "Ignoring non-INVITE response while waiting for current foreground resume re-INVITE: " +
-                        "callId=$callId cseq=$cseq status=${response.statusCode}",
-                )
-                return@setResponseCallback false
-            }
             when (response.statusCode) {
                 in 100..199 -> {
                     Rlog.d(
@@ -7067,7 +7055,7 @@ fun onWfcDisabled(reason: String) {
                 resumeInvite.toByteArray(),
             )
         ) {
-            removeResponseCallback(callId)
+            removeResponseCallback(callId, inviteCseq, SipMethod.INVITE)
             reconnectIms("current foreground resume re-INVITE write failed")
             return false
         }
@@ -7095,16 +7083,8 @@ fun onWfcDisabled(reason: String) {
             resumeSdp,
         )
 
-        setResponseCallback(callId) { response ->
+        setResponseCallback(callId, inviteCseq, SipMethod.INVITE) { response ->
             val cseq = response.headers["cseq"]?.getOrNull(0).orEmpty()
-            if (!cseq.contains("INVITE", ignoreCase = true)) {
-                Rlog.d(
-                    TAG,
-                    "Ignoring non-INVITE response while waiting for resume re-INVITE: " +
-                        "callId=$callId cseq=$cseq status=${response.statusCode}",
-                )
-                return@setResponseCallback false
-            }
             when (response.statusCode) {
                 in 100..199 -> {
                     Rlog.d(TAG, "Call-waiting resume re-INVITE provisional: callId=$callId status=${response.statusCode} cseq=$cseq")
@@ -7167,7 +7147,7 @@ fun onWfcDisabled(reason: String) {
                 resumeInvite.toByteArray(),
             )
         ) {
-            removeResponseCallback(callId)
+            removeResponseCallback(callId, inviteCseq, SipMethod.INVITE)
             reconnectIms("call-waiting resume re-INVITE write failed")
             return false
         }

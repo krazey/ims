@@ -187,8 +187,10 @@ internal class SipDispatcher(
         if (responseCb(response)) {
             lock.withLock {
                 if (transactionKey != null && transactionCb != null) {
-                    transactionResponseCallbacks -= transactionKey
-                } else {
+                    if (transactionResponseCallbacks[transactionKey] === responseCb) {
+                        transactionResponseCallbacks -= transactionKey
+                    }
+                } else if (responseCallbacks[callId] === responseCb) {
                     responseCallbacks -= callId
                 }
             }
