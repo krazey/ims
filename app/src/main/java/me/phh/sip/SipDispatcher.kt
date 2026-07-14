@@ -87,6 +87,18 @@ internal class SipDispatcher(
         requestWriters.clear()
     }
 
+    fun removeWriterForCallId(callId: String) {
+        requestWriters.remove(callId)
+    }
+
+    fun removeWritersFor(writer: OutputStream) {
+        requestWriters.forEach { (callId, registeredWriter) ->
+            if (registeredWriter === writer) {
+                requestWriters.remove(callId, registeredWriter)
+            }
+        }
+    }
+
     fun writerForCallId(callId: String): OutputStream? = requestWriters[callId]
 
     fun hasWriterForCallId(callId: String): Boolean = requestWriters.containsKey(callId)

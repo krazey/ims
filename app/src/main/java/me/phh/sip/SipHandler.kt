@@ -255,6 +255,12 @@ class SipHandler(
 
     private fun rememberTerminatedIncomingCall(callId: String, reason: String) {
         terminatedIncomingCallIds.remember(callId, "duplicate INVITE guard: $reason")
+        // Keep the flow briefly for a final response or a late retransmission,
+        // then release it even if no reconnect clears the dispatcher.
+        myHandler.postDelayed(
+            { dispatcher.removeWriterForCallId(callId) },
+            5_000L,
+        )
     }
 
     private fun wasRecentlyTerminatedIncomingCall(callId: String): Boolean {
@@ -336,11 +342,6 @@ class SipHandler(
             )
         }
     }
-
-    // SIP responses must be written back on the same transport flow that delivered the request.
-    // This is especially important for incoming INVITE over the TCP server socket: writing the
-    // 180/200 to the registration/control socket can make the P-CSCF ignore the final response.
-    private val requestWriters = java.util.concurrent.ConcurrentHashMap<String, OutputStream>() 
 
     private val imsNetworkRequestRestarter = ImsNetworkRequestRestarter(
         tag = TAG,
@@ -2319,6 +2320,7 @@ fun onWfcDisabled(reason: String) {
                         }
                         Rlog.w(TAG, "Got exception in accepted TCP server SIP flow; keeping IMS server socket alive", t)
                     } finally {
+                        dispatcher.removeWritersFor(accepted.writer)
                         serverSocket.closeAccepted(accepted.socket)
                     }
                 }
@@ -3167,6 +3169,7 @@ fun onWfcDisabled(reason: String) {
         )
         heldForegroundCall = null
         if (closeRtpSocket) {
+            dispatcher.removeWriterForCallId(heldCallId)
             sessionRefresher.cancel(heldCallId, reason)
             try { held.rtpSocket.close() } catch (t: Throwable) {
                 Rlog.d(TAG, "Failed to close held foreground RTP socket: callId=$heldCallId", t)
@@ -3282,6 +3285,7 @@ fun onWfcDisabled(reason: String) {
 
         val remoteMethodReason = SipRemoteDialogTermination.remoteMethodReason(request.method)
         sessionRefresher.cancel(callId, remoteMethodReason)
+        dispatcher.removeWriterForCallId(callId)
         if (currentCall?.outgoing == false) rememberTerminatedIncomingCall(callId, remoteMethodReason)
         val terminatedCall = currentCall
         val heldToResume = heldForegroundCall?.takeIf { terminatedCall != null && isBye }
@@ -7549,7 +7553,7 @@ fun onWfcDisabled(reason: String) {
             request = request,
             incomingCallId = incomingCallId,
             logTag = TAG,
-            hasIncomingResponseWriter = requestWriters.containsKey(incomingCallId),
+            hasIncomingResponseWriter = dispatcher.hasWriterForCallId(incomingCallId),
             amrWbMediaCodecAvailable = amrWbMediaCodecAvailable,
             extractCallerNumberFromHeader = { header ->
                 normalizeIncomingCallerNumberForFramework(

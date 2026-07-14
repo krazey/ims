@@ -188,7 +188,7 @@ class PhhMmTelFeature(
 
     var telephonyManager: TelephonyManager? = null
     private val readyCheckHandler = Handler(Looper.getMainLooper())
-    private val readyCheckExecutor = Executors.newSingleThreadExecutor()
+    private var readyCheckExecutor = Executors.newSingleThreadExecutor()
     private var readyCheckCallback: TelephonyCallback? = null
     private var readyCheckAttempts = 0
     private var frameworkSubId = initialSubId
@@ -405,6 +405,9 @@ class PhhMmTelFeature(
     }
 
     private fun bindReadyCheckTelephonyManager(reason: String) {
+        if (readyCheckExecutor.isShutdown) {
+            readyCheckExecutor = Executors.newSingleThreadExecutor()
+        }
         val subId = resolveSubIdForSlot()
         if (!SubscriptionManager.isValidSubscriptionId(subId)) {
             if (readyCheckAttempts < 30) {
@@ -1362,8 +1365,23 @@ sipHandler.imsFailureCallback = {
         Rlog.d(TAG, "$slotId onFeatureRemoved")
 
         invalidSubscriptionGraceGeneration++
+        readyCheckHandler.removeCallbacksAndMessages(null)
         unregisterReadyCheckCallback("feature removed")
         retireSipHandler("feature removed")
+        readyCheckExecutor.shutdownNow()
+
+        synchronized(incomingCallListenersLock) {
+            incomingCallListenersByCallId.clear()
+            incomingCallProfilesByCallId.clear()
+            incomingCallConnectedReportersByCallId.clear()
+            lastIncomingCallListener = null
+        }
+        outgoingCallListener = null
+        outgoingCallAutoResumeReporter = null
+        outgoingCallRemoteHoldReporter = null
+        outgoingCallActive = false
+        outgoingCallSipCallId = null
+        telephonyManager = null
 
         frameworkSubId = SubscriptionManager.INVALID_SUBSCRIPTION_ID
         featureInitialized = false

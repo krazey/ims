@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 package me.phh.sip
 
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import org.junit.Test
 
 class SipDispatcherTest {
@@ -52,5 +54,29 @@ class SipDispatcherTest {
 
         require(fallbackCalls == 2)
         require(transactionCalls == 1)
+    }
+
+    @Test
+    fun `closed transport drops only its request writers`() {
+        val dispatcher = SipDispatcher("test")
+        val firstWriter = ByteArrayOutputStream()
+        val secondWriter = ByteArrayOutputStream()
+        val firstRequest = "OPTIONS sip:test@example.test SIP/2.0\r\n" +
+            "Call-ID: first\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n"
+        val secondRequest = "OPTIONS sip:test@example.test SIP/2.0\r\n" +
+            "Call-ID: second\r\nCSeq: 2 OPTIONS\r\nContent-Length: 0\r\n\r\n"
+
+        dispatcher.parseMessage(
+            ByteArrayInputStream(firstRequest.toByteArray()).sipReader(),
+            firstWriter,
+        )
+        dispatcher.parseMessage(
+            ByteArrayInputStream(secondRequest.toByteArray()).sipReader(),
+            secondWriter,
+        )
+        dispatcher.removeWritersFor(firstWriter)
+
+        require(!dispatcher.hasWriterForCallId("first"))
+        require(dispatcher.hasWriterForCallId("second"))
     }
 }
