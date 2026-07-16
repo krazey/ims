@@ -979,8 +979,15 @@ class PhhMmTelFeature(
         val localHangup = map["localHangup"] == "true"
         val remoteNoMediaRelease = map["remoteNoMediaRelease"] == "true"
         val csRetry = map["csRetry"] == "true"
+        val imsRetry = map["imsRetry"] == "true"
 
         return when {
+            imsRetry -> ImsReasonInfo(
+                ImsReasonInfo.CODE_LOCAL_CALL_VOLTE_RETRY_REQUIRED,
+                0,
+                statusMessage,
+            )
+
             csRetry -> ImsReasonInfo(
                 ImsReasonInfo.CODE_LOCAL_CALL_CS_RETRY_REQUIRED,
                 ImsReasonInfo.EXTRA_CODE_CALL_RETRY_SILENT_REDIAL,

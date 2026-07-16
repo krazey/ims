@@ -5334,6 +5334,52 @@ fun onWfcDisabled(reason: String) {
         return null
     }
 
+    private fun handleAlternativeServiceResponseIfNeeded(
+        response: SipResponse,
+        cseq: String,
+    ): Boolean? {
+        if (!cseq.contains("INVITE", ignoreCase = true)) return null
+        val alternative = SipAlternativeServiceParser.parse(response) ?: return null
+        val callId = response.callIdOrEmpty()
+        val pending = pendingOutgoingInvite
+        if (pending == null || pending.callId != callId || callStarted.get()) {
+            Rlog.w(TAG, "Ignoring stale Alternative-Service response: callId=$callId")
+            return true
+        }
+
+        Rlog.w(
+            TAG,
+            "Alternative-Service: action=${alternative.action} " +
+                "urn=${alternative.serviceUrn} reason=${alternative.reason}",
+        )
+        callSetupTimers.cancelAll("Alternative-Service ${response.statusCode}")
+        stopCallRuntime("Alternative-Service ${alternative.action}")
+        if (currentCall?.callIdOrNull() == callId) {
+            currentCall = null
+        }
+        clearPendingOutgoingInvite(
+            callId,
+            closeRtpSocket = true,
+            reason = "Alternative-Service ${alternative.action}",
+        )
+        val extras = mutableMapOf(
+            "call-id" to callId,
+            "statusCode" to response.statusCode.toString(),
+            "statusString" to alternative.reason.ifBlank { "Alternative Service" },
+            "callStartFailed" to "true",
+            "outgoingCall" to "true",
+            "alternativeServiceAction" to alternative.action.name,
+            "alternativeServiceUrn" to alternative.serviceUrn,
+        )
+        if (alternative.requiresImsRetry) {
+            extras["imsRetry"] = "true"
+        } else {
+            extras["csRetry"] = "true"
+        }
+        onCancelledCall?.invoke(Object(), "Alternative-Service", extras)
+        return true
+    }
+
 
     private fun handleOutgoingReliableProvisionalIfNeeded(
         response: SipResponse,
@@ -5780,6 +5826,8 @@ fun onWfcDisabled(reason: String) {
         val rseqHandled = prackResponseState.rseqHandled
 
         handleOutgoingAckOrByeResponse(resp, cseq)?.let { return it }
+
+        handleAlternativeServiceResponseIfNeeded(resp, cseq)?.let { return it }
 
         handleOutgoingFinalInviteAckIfNeeded(
             response = resp,
