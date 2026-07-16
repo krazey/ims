@@ -51,6 +51,7 @@ data class SipCarrierDatabaseProfile(
     val authAlgorithms: List<String>,
     val encryptionAlgorithms: List<String>,
     val subscribeForReg: Boolean,
+    val enableGruu: Boolean,
     val services: Set<String>,
     val networks: Set<String>,
     val minSeSeconds: Int?,
@@ -67,8 +68,8 @@ data class SipCarrierDatabaseRecord(
     val mapping: SipCarrierDatabaseMapping,
     val profiles: List<SipCarrierDatabaseProfile>,
     val serviceSwitches: Map<String, Boolean>,
-    val csfbStatusCodes: Set<Int>,
-    val voiceCsfbStatusCodes: Set<Int>,
+    val csfbStatusRules: Set<String>,
+    val voiceCsfbStatusRules: Set<String>,
     val emergencyDomain: String?,
     val source: String = "Samsung S26 imsservice",
     val verification: String = "firmware_reference",
@@ -94,6 +95,7 @@ data class SipCarrierDatabaseRecord(
 
         return base.copy(
             subscribeRegEvent = profile.subscribeForReg,
+            registerGruuSupported = profile.enableGruu,
             outgoingTargetUriType = uriType,
             securityClientAlgs = supportedAuthAlgorithms.ifEmpty { base.securityClientAlgs },
             securityClientEalgs = supportedEncryptionAlgorithms.ifEmpty {
@@ -110,7 +112,10 @@ data class SipCarrierDatabaseRecord(
                     setOf("460", "461"),
             ),
             inviteFailurePolicy = base.inviteFailurePolicy.copy(
-                csfbStatusCodes = csfbStatusCodes,
+                csfbStatusCodes = (csfbStatusRules + voiceCsfbStatusRules)
+                    .mapNotNull(String::toIntOrNull)
+                    .toSet(),
+                csfbStatusRules = csfbStatusRules + voiceCsfbStatusRules,
             ),
         )
     }

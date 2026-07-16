@@ -79,6 +79,11 @@ internal data class SipCarrierPolicyOverlay(
                 "invite_csfb_status_codes",
                 base.inviteFailurePolicy.csfbStatusCodes,
             ),
+            csfbStatusRules = stringArrays["invite_csfb_status_codes"]
+                ?.map(String::trim)
+                ?.filter(String::isNotEmpty)
+                ?.toSet()
+                ?: base.inviteFailurePolicy.csfbStatusRules,
         )
 
         return base.copy(

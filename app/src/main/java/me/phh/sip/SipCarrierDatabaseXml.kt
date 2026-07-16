@@ -20,8 +20,8 @@ internal object SipCarrierDatabaseXml {
         var selected: SipCarrierDatabaseMapping? = null
         var switches: Map<String, Boolean> = emptyMap()
         var switchesAreExact = false
-        var csfbStatusCodes: Set<Int> = emptySet()
-        var voiceCsfbStatusCodes: Set<Int> = emptySet()
+        var csfbStatusRules: Set<String> = emptySet()
+        var voiceCsfbStatusRules: Set<String> = emptySet()
         var emergencyDomain: String? = null
         var globalSettingsAreExact = false
         var source = "Samsung IMS database"
@@ -82,8 +82,12 @@ internal object SipCarrierDatabaseXml {
                             if (mapping != null && mnoMatches(mapping.mnoName, candidate) &&
                                 (exact || !globalSettingsAreExact)
                             ) {
-                                csfbStatusCodes = parser.intSet("all_csfb_error_code_list")
-                                voiceCsfbStatusCodes = parser.intSet("voice_csfb_error_code_list")
+                                csfbStatusRules = parser.csv(
+                                    "all_csfb_error_code_list",
+                                ).toSet()
+                                voiceCsfbStatusRules = parser.csv(
+                                    "voice_csfb_error_code_list",
+                                ).toSet()
                                 emergencyDomain = parser.attribute("emergency_domain_setting")
                                 globalSettingsAreExact = exact
                             }
@@ -106,8 +110,8 @@ internal object SipCarrierDatabaseXml {
                 it.mnoName.equals(mapping.mnoName, ignoreCase = true)
             },
             serviceSwitches = switches,
-            csfbStatusCodes = csfbStatusCodes,
-            voiceCsfbStatusCodes = voiceCsfbStatusCodes,
+            csfbStatusRules = csfbStatusRules,
+            voiceCsfbStatusRules = voiceCsfbStatusRules,
             emergencyDomain = emergencyDomain,
             source = source,
             verification = verification,
@@ -138,6 +142,7 @@ internal object SipCarrierDatabaseXml {
             encryptionAlgorithms = parser.csv("enc_algo"),
             subscribeForReg = parser.attribute("subscribe_for_reg")?.toBooleanStrictOrNull()
                 ?: true,
+            enableGruu = parser.attribute("enable_gruu")?.toBooleanStrictOrNull() ?: true,
             services = parser.csv("services").toSet(),
             networks = parser.csv("networks").toSet(),
             minSeSeconds = parser.attribute("min_se")?.toIntOrNull(),
@@ -171,6 +176,4 @@ internal object SipCarrierDatabaseXml {
     private fun XmlPullParser.csv(name: String): List<String> =
         attribute(name).orEmpty().split(',').map(String::trim).filter(String::isNotEmpty)
 
-    private fun XmlPullParser.intSet(name: String): Set<Int> =
-        csv(name).mapNotNull(String::toIntOrNull).toSet()
 }

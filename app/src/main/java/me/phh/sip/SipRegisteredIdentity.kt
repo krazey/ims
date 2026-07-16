@@ -15,7 +15,7 @@ data class SipRegisteredIdentity(
 }
 
 object SipRegisterSuccessParser {
-    fun parse(response: SipResponse): SipRegisteredIdentity {
+    fun parse(response: SipResponse): SipRegisteredIdentity? {
         val lrParameterRegex = Regex("lr;[^>]*")
         val route =
             (response.headers.getOrDefault("service-route", emptyList()) +
@@ -24,18 +24,38 @@ object SipRegisterSuccessParser {
                 .toList()
                 .map { lrParameterRegex.replace(it, "lr") }
 
-        val associatedUri =
-            response.headers["p-associated-uri"]!!
-                .flatMap { it.split(",") }
-                .map { it.trimStart('<').trimEnd('>').split(':') }
-        val preSip = associatedUri.first { it[0] == "sip" }[1]
-        val mySip = "sip:$preSip"
-        val myTel = associatedUri.firstOrNull { it[0] == "tel" }?.get(1) ?: preSip.split("@")[0]
+        val associatedUris = response.headers["p-associated-uri"]
+            ?.flatMap { it.split(",") }
+            ?.mapNotNull(::extractAssociatedUri)
+            .orEmpty()
+        val mySip = associatedUris.firstOrNull {
+            it.startsWith("sip:", ignoreCase = true)
+        } ?: return null
+        val myTel = associatedUris.firstOrNull {
+            it.startsWith("tel:", ignoreCase = true)
+        }?.substringAfter(":")
+            ?: mySip.substringAfter(":").substringBefore("@").substringBefore(";")
 
         return SipRegisteredIdentity(
             route = route,
             mySip = mySip,
             myTel = myTel,
         )
+    }
+
+    private fun extractAssociatedUri(value: String): String? {
+        val candidate = if ('<' in value && '>' in value) {
+            value.substringAfter('<').substringBefore('>')
+        } else {
+            Regex("(?i)(?:sip|tel):[^\\s,>]+")
+                .find(value)
+                ?.value
+                ?.substringBefore(';')
+        }?.trim().orEmpty()
+
+        return candidate.takeIf {
+            it.startsWith("sip:", ignoreCase = true) ||
+                it.startsWith("tel:", ignoreCase = true)
+        }
     }
 }

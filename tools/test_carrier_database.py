@@ -82,6 +82,16 @@ class CarrierDatabaseTest(unittest.TestCase):
         self.assertEqual("incoming", profile.get("keep_alive_mode_mt"))
         self.assertEqual("2000", profile.get("keep_alive_interval"))
 
+    def test_csfb_status_class_rules_are_preserved(self):
+        tele2_se = self.global_settings("Tele2_SE")
+        self.assertEqual(
+            "3xx,5xx,6xx,1117",
+            tele2_se.get("all_csfb_error_code_list"),
+        )
+
+        etisalat = self.global_settings("Etisalat_AE")
+        self.assertEqual("403,5xx", etisalat.get("voice_csfb_error_code_list"))
+
 
 if __name__ == "__main__":
     unittest.main()

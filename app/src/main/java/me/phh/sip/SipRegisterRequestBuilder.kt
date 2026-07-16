@@ -122,6 +122,7 @@ object SipRegisterRequestBuilder {
         useSelectedSecurityClient: Boolean = false,
         forceSecurityAgreementNullEalg: Boolean = false,
         stripSecurityVerifyQ: Boolean = false,
+        supportGruu: Boolean = true,
     ): SipRequest {
         val defaultSecClientLine = if (registerCounter == 1 || akaDigest.isNotBlank()) {
             SipSecurityClientHeader.build(
@@ -143,6 +144,11 @@ object SipRegisterRequestBuilder {
         } else {
             effectiveSecClientLine
         }
+        val supported = if (supportGruu) {
+            "path, gruu, sec-agree"
+        } else {
+            "path, sec-agree"
+        }
         // P-Access-Network-Info: 3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=216302ee2003a107
         return SipRequest(
             SipMethod.REGISTER,
@@ -153,7 +159,7 @@ object SipRegisterRequestBuilder {
                 Expires: 7200
                 Cseq: $registerCounter REGISTER
                 Contact: $contact
-                Supported: path, gruu, sec-agree
+                Supported: $supported
                 Allow: INVITE, ACK, CANCEL, BYE, UPDATE, REFER, NOTIFY, MESSAGE, PRACK, OPTIONS
                 $authLine
                 Require: sec-agree

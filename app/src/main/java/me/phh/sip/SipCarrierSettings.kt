@@ -44,7 +44,35 @@ data class SipInviteFailurePolicy(
     val reconnectAfterFinalFailureStatusCodes: Set<Int> = emptySet(),
     val reconnectAfterFinalFailureDelayMs: Long = 1_000L,
     val csfbStatusCodes: Set<Int> = emptySet(),
-)
+    val csfbStatusRules: Set<String> = emptySet(),
+) {
+    fun shouldFallbackToCs(statusCode: Int): Boolean =
+        statusCode in csfbStatusCodes ||
+            csfbStatusRules.any { SipStatusCodeRule.matches(it, statusCode) }
+}
+
+internal object SipStatusCodeRule {
+    private val statusClass = Regex("^[1-6]xx$", RegexOption.IGNORE_CASE)
+    private val excludedStatusClass = Regex(
+        "^\\^\\(\\?!.*\\)([1-6])xx$",
+        RegexOption.IGNORE_CASE,
+    )
+
+    fun matches(rule: String, statusCode: Int): Boolean {
+        val normalized = rule.trim()
+        normalized.toIntOrNull()?.let { return it == statusCode }
+        if (statusClass.matches(normalized)) {
+            return statusCode / 100 == normalized.first().digitToInt()
+        }
+
+        val statusClassMatch = excludedStatusClass.matchEntire(normalized) ?: return false
+        if (statusCode / 100 != statusClassMatch.groupValues[1].toInt()) return false
+        val excluded = Regex("\\d{3}").findAll(normalized)
+            .map { it.value.toInt() }
+            .toSet()
+        return statusCode !in excluded
+    }
+}
 
 data class SipCallSignalingKeepAlivePolicy(
     val outgoingMode: String = "none",
@@ -93,6 +121,7 @@ data class SipCarrierPolicy(
     val requireNonsessAka: Boolean = false,
     val registerExtraHeaders: SipHeadersMap = emptyMap(),
     val subscribeRegEvent: Boolean = true,
+    val registerGruuSupported: Boolean = true,
     val forceCsfbDialStrings: Set<String> = emptySet(),
     val plainTelShortCodes: Set<String> = emptySet(),
     val plainTelAllLocalShortCodes: Boolean = false,
@@ -273,6 +302,7 @@ data class SipCarrierSettings(
     val requireNonsessAka: Boolean get() = policy.requireNonsessAka
     val registerExtraHeaders: SipHeadersMap get() = policy.registerExtraHeaders
     val subscribeRegEvent: Boolean get() = policy.subscribeRegEvent
+    val registerGruuSupported: Boolean get() = policy.registerGruuSupported
     val registrationRecoveryPolicy: SipRegistrationRecoveryPolicy get() = policy.registrationRecoveryPolicy
     val smsPolicy: SipSmsPolicy get() = policy.smsPolicy
     val callSignalingKeepAlivePolicy: SipCallSignalingKeepAlivePolicy

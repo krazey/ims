@@ -1738,7 +1738,7 @@ fun onWfcDisabled(reason: String) {
         reconnectController.markConnected()
 
         installSipCallbacks()
-        handleResponse(regReply)
+        if (registerCallback(regReply)) return
 
         startSipReaderLoops()
     }
@@ -2823,6 +2823,7 @@ fun onWfcDisabled(reason: String) {
             stripSecurityVerifyQ = false,
             useSelectedSecurityClient = registerTargetRealm != realm,
             forceSecurityAgreementNullEalg = false,
+            supportGruu = carrierSettings.registerGruuSupported,
         )
         val registerBytesWithNetworkHeaders = addCarrierRegisterNetworkHeaders(msg.toByteArray())
         Rlog.d(TAG, "Sending ${msg.safeLogSummary()}")
@@ -2839,6 +2840,15 @@ fun onWfcDisabled(reason: String) {
         require(response.statusCode == 200)
 
         val registeredIdentity = SipRegisterSuccessParser.parse(response)
+        if (registeredIdentity == null) {
+            Rlog.w(
+                TAG,
+                "REGISTER 200 OK has no usable P-Associated-URI; " +
+                    "retrying IMS registration",
+            )
+            failConnectAndRetry("REGISTER 200 missing usable P-Associated-URI")
+            return true
+        }
         mySip = registeredIdentity.mySip
         myTel = registeredIdentity.myTel
         commonHeaders += registeredIdentity.commonHeaders()
@@ -5194,7 +5204,9 @@ fun onWfcDisabled(reason: String) {
             )
             val csRetry =
                 initialInviteFailed &&
-                    response.statusCode in carrierSettings.inviteFailurePolicy.csfbStatusCodes
+                    carrierSettings.inviteFailurePolicy.shouldFallbackToCs(
+                        response.statusCode,
+                    )
             if (csRetry) {
                 Rlog.w(
                     TAG,

@@ -15,9 +15,10 @@ The generated database contains:
 Records imported from firmware have `verification="firmware_reference"`.
 Supported fields are activated as the base PhhIms policy: called-party URI
 type, SIP control transport, Security-Client algorithms, reg-event
-subscription, session timers, call-signaling keepalives and normal-call CSFB
-response codes. Log-verified PhhIms behavior stays in the policy overlay and
-has higher precedence.
+subscription, REGISTER GRUU support, session timers, call-signaling
+keepalives and normal-call CSFB response rules. CSFB rules retain Samsung's
+status classes and exclusions, such as `5xx` or `^(?!407)4xx`. Log-verified
+PhhIms behavior stays in the policy overlay and has higher precedence.
 
 Samsung-only media, UT and RCS settings remain available as reference data
 until PhhIms has an equivalent typed control point. Importing a field never

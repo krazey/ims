@@ -7,6 +7,7 @@ class SipCarrierDatabaseTest {
     private fun voiceProfile(
         remoteUriType: String = "sip",
         transport: String = "udp-preferred",
+        enableGruu: Boolean = false,
     ) = SipCarrierDatabaseProfile(
         name = "Test IMS",
         mnoName = "Test_MNO",
@@ -23,6 +24,7 @@ class SipCarrierDatabaseTest {
         authAlgorithms = listOf("hmac-md5-96", "unsupported"),
         encryptionAlgorithms = listOf("null", "des-ede3-cbc", "aes-cbc"),
         subscribeForReg = false,
+        enableGruu = enableGruu,
         services = setOf("mmtel", "smsip"),
         networks = setOf("lte", "wifi"),
         minSeSeconds = 120,
@@ -91,8 +93,8 @@ class SipCarrierDatabaseTest {
             mapping = SipCarrierDatabaseMapping("00101", "001001", "Test_MNO"),
             profiles = listOf(voiceProfile()),
             serviceSwitches = mapOf("enableServiceVolte" to true),
-            csfbStatusCodes = setOf(380, 503),
-            voiceCsfbStatusCodes = emptySet(),
+            csfbStatusRules = setOf("380", "5xx"),
+            voiceCsfbStatusRules = setOf("403"),
             emergencyDomain = "PS",
         )
 
@@ -100,6 +102,7 @@ class SipCarrierDatabaseTest {
 
         require(!resolved.isControlSocketUdp)
         require(!resolved.subscribeRegEvent)
+        require(!resolved.registerGruuSupported)
         require(
             resolved.outgoingTargetUriType ==
                 SipCarrierPolicy.OutgoingTargetUriType.SIP_USER_PHONE,
@@ -112,7 +115,8 @@ class SipCarrierDatabaseTest {
         require(!resolved.callSignalingKeepAlivePolicy.startsForOutgoing(100))
         require(resolved.callSignalingKeepAlivePolicy.startsForIncoming)
         require(resolved.callSignalingKeepAlivePolicy.intervalMs == 2_000L)
-        require(resolved.inviteFailurePolicy.csfbStatusCodes == setOf(380, 503))
+        require(resolved.inviteFailurePolicy.csfbStatusCodes == setOf(380, 403))
+        require(resolved.inviteFailurePolicy.shouldFallbackToCs(503))
         require(
             resolved.outgoingTargetUri(
                 "tel:12345;phone-context=ims.example.test",
@@ -127,8 +131,8 @@ class SipCarrierDatabaseTest {
             mapping = SipCarrierDatabaseMapping("00101", "001001", "Test_MNO"),
             profiles = listOf(voiceProfile()),
             serviceSwitches = emptyMap(),
-            csfbStatusCodes = setOf(503),
-            voiceCsfbStatusCodes = emptySet(),
+            csfbStatusRules = setOf("503"),
+            voiceCsfbStatusRules = emptySet(),
             emergencyDomain = null,
         ).applyTo(SipCarrierPolicy.defaultFor("001", "001"))
 
@@ -147,5 +151,6 @@ class SipCarrierDatabaseTest {
         )
         require(overridden.securityClientAlgs == listOf("hmac-sha-1-96"))
         require(overridden.inviteFailurePolicy.csfbStatusCodes.isEmpty())
+        require(!overridden.inviteFailurePolicy.shouldFallbackToCs(503))
     }
 }
