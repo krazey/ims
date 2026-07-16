@@ -152,6 +152,12 @@ data class SipCallSignalingKeepAlivePolicy(
         get() = incomingMode == "incoming"
 }
 
+data class SipCallSetupTimerPolicy(
+    val inviteTimeoutMs: Long = 180_000L,
+    val ringingTimeoutMs: Long = 30_000L,
+    val ringbackTimeoutMs: Long = 32_000L,
+)
+
 data class SipPublicNumberNormalizationPolicy(
     val kazakhstanMobileWithoutCountryCode: Boolean = false,
 ) {
@@ -201,6 +207,7 @@ data class SipCarrierPolicy(
     val smsPolicy: SipSmsPolicy = SipSmsPolicy(),
     val callSignalingKeepAlivePolicy: SipCallSignalingKeepAlivePolicy =
         SipCallSignalingKeepAlivePolicy(),
+    val callSetupTimerPolicy: SipCallSetupTimerPolicy = SipCallSetupTimerPolicy(),
     val inviteFailurePolicy: SipInviteFailurePolicy = SipInviteFailurePolicy(),
 ) {
     val mccMnc: String = mcc + mnc
@@ -369,6 +376,8 @@ data class SipCarrierSettings(
     val smsPolicy: SipSmsPolicy get() = policy.smsPolicy
     val callSignalingKeepAlivePolicy: SipCallSignalingKeepAlivePolicy
         get() = policy.callSignalingKeepAlivePolicy
+    val callSetupTimerPolicy: SipCallSetupTimerPolicy
+        get() = policy.callSetupTimerPolicy
     val inviteFailurePolicy: SipInviteFailurePolicy get() = policy.inviteFailurePolicy
     val outgoingTargetUriType: SipCarrierPolicy.OutgoingTargetUriType
         get() = policy.outgoingTargetUriType

@@ -281,6 +281,15 @@ class SipHandler(
         remoteAddress = { if (this::pcscfAddr.isInitialized) pcscfAddr else null },
         remotePort = { activePcscfSipPort },
     )
+    private val callSetupTimers = SipCallSetupTimers(
+        tag = TAG,
+        handler = myHandler,
+        policy = { carrierSettings.callSetupTimerPolicy },
+        onOutgoingTimeout = { callId, reason ->
+            handleOutgoingCallSetupTimeout(callId, reason)
+        },
+        onIncomingTimeout = { callId -> handleIncomingRingingTimeout(callId) },
+    )
 
     private val inviteSessionTimerPolicy = SipInviteSessionTimerPolicy(
         tag = TAG,
@@ -572,6 +581,7 @@ private val smsHandler = SipSmsHandler(
 
     private fun stopCallRuntime(reason: String) {
         Rlog.d(TAG, "Stopping call runtime state: $reason")
+        callSetupTimers.cancelAll(reason)
         callSignalingKeepAlive.stop(reason)
         callStopped.set(true)
         callStarted.set(false)
@@ -4054,6 +4064,7 @@ fun onWfcDisabled(reason: String) {
         response: SipResponse,
         acceptedCallId: String,
     ): IncomingInviteFinalResponseWrite? {
+        callSetupTimers.cancelAll("incoming INVITE accepted")
         callSignalingKeepAlive.stop("incoming INVITE accepted")
         val responseWriter = call.incomingResponseWriter ?: socket.gWriter()
         val responseBytes = response.toByteArray()
@@ -4799,6 +4810,48 @@ fun onWfcDisabled(reason: String) {
         }
     }
 
+    private fun handleOutgoingCallSetupTimeout(callId: String, reason: String) {
+        val pending = pendingOutgoingInvite
+        if (pending == null || pending.callId != callId || callStarted.get()) {
+            Rlog.d(TAG, "Ignoring stale outgoing timer: callId=$callId reason=$reason")
+            return
+        }
+
+        Rlog.w(TAG, "Outgoing call setup timer expired: callId=$callId reason=$reason")
+        stopCallRuntime(reason)
+        if (currentCall?.callIdOrNull() == callId) {
+            currentCall = null
+        }
+        sendCancelForPendingOutgoingInvite(pending, reason)
+        onCancelledCall?.invoke(
+            Object(),
+            reason,
+            mapOf(
+                "call-id" to callId,
+                "statusCode" to "408",
+                "statusString" to "Request Timeout",
+                "callStartFailed" to "true",
+            ),
+        )
+    }
+
+    private fun handleIncomingRingingTimeout(callId: String) {
+        val waiting = pendingWaitingInvite
+        if (waiting?.callId == callId) {
+            Rlog.w(TAG, "Incoming call-waiting ringing timer expired: callId=$callId")
+            rejectPendingWaitingInvite(waiting, "incoming ringing timeout")
+            return
+        }
+
+        val call = currentCall
+        if (call == null || call.outgoing || call.callIdOrNull() != callId || callStarted.get()) {
+            Rlog.d(TAG, "Ignoring stale incoming ringing timer: callId=$callId")
+            return
+        }
+        Rlog.w(TAG, "Incoming ringing timer expired: callId=$callId")
+        rejectCall(callId)
+    }
+
     private fun createOutgoingCallRtpSocket(): DatagramSocket? {
         val rtpSocket = try {
             DatagramSocket(0, localAddr)
@@ -5143,6 +5196,10 @@ fun onWfcDisabled(reason: String) {
         outgoingDialogNextCseq: AtomicInteger,
     ): Boolean? {
         if (cseq.contains("INVITE", ignoreCase = true)) {
+            callSetupTimers.onOutgoingInviteResponse(
+                response.callIdOrEmpty(),
+                response.statusCode,
+            )
             if (response.statusCode >= 200) {
                 callSignalingKeepAlive.stop(
                     "outgoing INVITE final response ${response.statusCode}",
@@ -6818,6 +6875,9 @@ fun onWfcDisabled(reason: String) {
         ) {
             callSignalingKeepAlive.start("incoming call-waiting INVITE")
         }
+        if (waitingRingingSent) {
+            callSetupTimers.startIncoming(incomingCallId)
+        }
         onIncomingCall?.invoke(
             Object(),
             callerNumber,
@@ -7621,6 +7681,7 @@ fun onWfcDisabled(reason: String) {
         pending: PendingWaitingInvite,
         reason: String,
     ) {
+        callSetupTimers.cancelAll(reason)
         rememberTerminatedIncomingCall(
             pending.callId,
             SipIncomingInviteFinalResponses.localRejectTerminationReason(),
@@ -8180,6 +8241,7 @@ fun onWfcDisabled(reason: String) {
             reconnectIms("fast incoming 180 Ringing write failed")
             return 0
         }
+        callSetupTimers.startIncoming(incomingCallId)
         if (carrierSettings.callSignalingKeepAlivePolicy.startsForIncoming) {
             callSignalingKeepAlive.start("incoming INVITE")
         }

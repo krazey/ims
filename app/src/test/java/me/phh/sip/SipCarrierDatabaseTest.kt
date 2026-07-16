@@ -32,6 +32,7 @@ class SipCarrierDatabaseTest {
         networks = setOf("lte", "wifi"),
         minSeSeconds = 120,
         sessionExpiresSeconds = 2400,
+        inviteTimeoutSeconds = 180,
         ringingTimerSeconds = 90,
         ringbackTimerSeconds = 90,
         keepAliveModeMo = "alerting",
@@ -120,6 +121,9 @@ class SipCarrierDatabaseTest {
             resolved.registrationRecoveryPolicy.forbiddenPcscfPolicy ==
                 RegistrationForbiddenPcscfPolicy.NEXT_PCSCF,
         )
+        require(resolved.callSetupTimerPolicy.inviteTimeoutMs == 180_000L)
+        require(resolved.callSetupTimerPolicy.ringingTimeoutMs == 90_000L)
+        require(resolved.callSetupTimerPolicy.ringbackTimeoutMs == 90_000L)
         require(resolved.callSignalingKeepAlivePolicy.startsForOutgoing(180))
         require(!resolved.callSignalingKeepAlivePolicy.startsForOutgoing(100))
         require(resolved.callSignalingKeepAlivePolicy.startsForIncoming)

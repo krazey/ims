@@ -59,6 +59,7 @@ data class SipCarrierDatabaseProfile(
     val networks: Set<String>,
     val minSeSeconds: Int?,
     val sessionExpiresSeconds: Int?,
+    val inviteTimeoutSeconds: Int?,
     val ringingTimerSeconds: Int?,
     val ringbackTimerSeconds: Int?,
     val keepAliveModeMo: String,
@@ -124,6 +125,17 @@ data class SipCarrierDatabaseRecord(
                 intervalMs = profile.keepAliveIntervalMs ?: 8_000L,
                 delayFirstPacket = mapping.canonicalMccMnc.take(3) in
                     setOf("460", "461"),
+            ),
+            callSetupTimerPolicy = SipCallSetupTimerPolicy(
+                inviteTimeoutMs = profile.inviteTimeoutSeconds
+                    ?.coerceAtLeast(1)?.times(1_000L)
+                    ?: base.callSetupTimerPolicy.inviteTimeoutMs,
+                ringingTimeoutMs = profile.ringingTimerSeconds
+                    ?.coerceAtLeast(1)?.times(1_000L)
+                    ?: base.callSetupTimerPolicy.ringingTimeoutMs,
+                ringbackTimeoutMs = profile.ringbackTimerSeconds
+                    ?.coerceAtLeast(1)?.times(1_000L)
+                    ?: base.callSetupTimerPolicy.ringbackTimeoutMs,
             ),
             inviteFailurePolicy = base.inviteFailurePolicy.copy(
                 csfbStatusCodes = (csfbStatusRules + voiceCsfbStatusRules)

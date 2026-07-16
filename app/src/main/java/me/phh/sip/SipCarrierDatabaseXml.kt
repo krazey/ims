@@ -152,6 +152,7 @@ internal object SipCarrierDatabaseXml {
             networks = parser.csv("networks").toSet(),
             minSeSeconds = parser.attribute("min_se")?.toIntOrNull(),
             sessionExpiresSeconds = parser.attribute("session_expires")?.toIntOrNull(),
+            inviteTimeoutSeconds = parser.attribute("invite_timeout")?.toIntOrNull(),
             ringingTimerSeconds = parser.attribute("ringing_timer")?.toIntOrNull(),
             ringbackTimerSeconds = parser.attribute("ringback_timer")?.toIntOrNull(),
             keepAliveModeMo = parser.attribute("keep_alive_mode_mo") ?: "none",

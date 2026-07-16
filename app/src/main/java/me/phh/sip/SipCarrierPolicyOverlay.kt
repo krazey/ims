@@ -92,6 +92,14 @@ internal data class SipCarrierPolicyOverlay(
                 ?.toSet()
                 ?: base.inviteFailurePolicy.csfbStatusRules,
         )
+        val callSetupTimerPolicy = base.callSetupTimerPolicy.copy(
+            inviteTimeoutMs = longs["invite_timeout_ms"]
+                ?: base.callSetupTimerPolicy.inviteTimeoutMs,
+            ringingTimeoutMs = longs["ringing_timeout_ms"]
+                ?: base.callSetupTimerPolicy.ringingTimeoutMs,
+            ringbackTimeoutMs = longs["ringback_timeout_ms"]
+                ?: base.callSetupTimerPolicy.ringbackTimeoutMs,
+        )
 
         return base.copy(
             isControlSocketUdp = booleans["control_socket_udp"]
@@ -128,6 +136,7 @@ internal data class SipCarrierPolicyOverlay(
             publicNumberNormalizationPolicy = publicNumberPolicy,
             registrationRecoveryPolicy = recoveryPolicy,
             smsPolicy = smsPolicy,
+            callSetupTimerPolicy = callSetupTimerPolicy,
             inviteFailurePolicy = inviteFailurePolicy,
         )
     }
