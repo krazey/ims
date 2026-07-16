@@ -1548,9 +1548,22 @@ fun onWfcDisabled(reason: String) {
         reconnectController.scheduleReconnectRetry(reason, delayMs)
     }
 
-    private fun failConnectAndRetry(reason: String, baseDelayMs: Long = 5000L) {
-        maybeBlockCurrentPcscfForRegistrationFailure(reason)
-        reconnectController.failConnectAndRetry(reason, baseDelayMs)
+    private fun failConnectAndRetry(
+        reason: String,
+        baseDelayMs: Long = carrierSettings.registrationRecoveryPolicy.retryBaseMs,
+        maxDelayMs: Long = carrierSettings.registrationRecoveryPolicy.retryMaxMs,
+        explicitDelayMs: Long? = null,
+        blockCurrentPcscf: Boolean = true,
+    ) {
+        if (blockCurrentPcscf) {
+            maybeBlockCurrentPcscfForRegistrationFailure(reason)
+        }
+        reconnectController.failConnectAndRetry(
+            reason,
+            baseDelayMs,
+            maxDelayMs,
+            explicitDelayMs,
+        )
     }
 
     private fun reconnectIms(reason: String, newNetwork: Network? = null, delayMs: Long = 1000L) {
@@ -1873,7 +1886,10 @@ fun onWfcDisabled(reason: String) {
         if (plainRegReply !is SipResponse || plainRegReply.statusCode != 401) {
             Rlog.w(TAG, "Didn't get expected response from initial register, aborting")
             plainSocket.close()
-            failConnectAndRetry("Initial SIP REGISTER did not return 401")
+            recoverFromRegistrationFailure(
+                plainRegReply as? SipResponse,
+                "Initial SIP REGISTER did not return 401",
+            )
             return null
         }
 
@@ -2157,8 +2173,37 @@ fun onWfcDisabled(reason: String) {
             return
         }
 
-        Rlog.w(TAG, "Could not connect, aborting SIP")
-        failConnectAndRetry("Authenticated SIP REGISTER did not return 200")
+        recoverFromRegistrationFailure(
+            regReply as? SipResponse,
+            "Authenticated SIP REGISTER failed",
+        )
+    }
+
+
+    private fun recoverFromRegistrationFailure(
+        response: SipResponse?,
+        fallbackReason: String,
+    ) {
+        val recoveryPolicy = carrierSettings.registrationRecoveryPolicy
+        val decision = SipRegistrationFailurePolicy.decide(response, recoveryPolicy)
+        val status = response?.statusCode
+        if (!decision.retry) {
+            val reason = "REGISTER $status requested permanent stop"
+            Rlog.w(
+                TAG,
+                "$reason for the current IMS session",
+            )
+            dropImsConnection(reason)
+            return
+        }
+
+        val reason = "$fallbackReason with ${status ?: "no response"}"
+        Rlog.w(TAG, "$reason; applying carrier registration recovery policy")
+        failConnectAndRetry(
+            reason = reason,
+            explicitDelayMs = decision.retryAfterMs,
+            blockCurrentPcscf = decision.blockCurrentPcscf,
+        )
     }
 
 

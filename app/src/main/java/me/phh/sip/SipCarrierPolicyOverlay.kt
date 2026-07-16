@@ -36,6 +36,13 @@ internal data class SipCarrierPolicyOverlay(
             keepFrameworkRegistrationDuringTransientSipReconnect = booleans[
                 "keep_framework_registration_during_transient_sip_reconnect"
             ] ?: base.registrationRecoveryPolicy.keepFrameworkRegistrationDuringTransientSipReconnect,
+            retryBaseMs = longs["registration_retry_base_ms"]
+                ?: base.registrationRecoveryPolicy.retryBaseMs,
+            retryMaxMs = longs["registration_retry_max_ms"]
+                ?: base.registrationRecoveryPolicy.retryMaxMs,
+            forbiddenPcscfPolicy = strings["registration_403_pcscf_policy"]
+                ?.let { enumValueOrNull<RegistrationForbiddenPcscfPolicy>(it) }
+                ?: base.registrationRecoveryPolicy.forbiddenPcscfPolicy,
         )
         val smsPolicy = base.smsPolicy.copy(
             fallbackSipStatusCodes = intSet(

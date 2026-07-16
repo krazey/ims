@@ -52,6 +52,9 @@ data class SipCarrierDatabaseProfile(
     val encryptionAlgorithms: List<String>,
     val subscribeForReg: Boolean,
     val enableGruu: Boolean,
+    val registrationRetryBaseSeconds: Int?,
+    val registrationRetryMaxSeconds: Int?,
+    val registrationPcscfPolicyOn403: String?,
     val services: Set<String>,
     val networks: Set<String>,
     val minSeSeconds: Int?,
@@ -104,6 +107,17 @@ data class SipCarrierDatabaseRecord(
             minSeSeconds = profile.minSeSeconds ?: base.minSeSeconds,
             sessionExpiresSeconds = profile.sessionExpiresSeconds
                 ?: base.sessionExpiresSeconds,
+            registrationRecoveryPolicy = base.registrationRecoveryPolicy.copy(
+                retryBaseMs = profile.registrationRetryBaseSeconds
+                    ?.coerceAtLeast(1)?.times(1_000L)
+                    ?: base.registrationRecoveryPolicy.retryBaseMs,
+                retryMaxMs = profile.registrationRetryMaxSeconds
+                    ?.coerceAtLeast(1)?.times(1_000L)
+                    ?: base.registrationRecoveryPolicy.retryMaxMs,
+                forbiddenPcscfPolicy = RegistrationForbiddenPcscfPolicy.fromSamsung(
+                    profile.registrationPcscfPolicyOn403,
+                ) ?: base.registrationRecoveryPolicy.forbiddenPcscfPolicy,
+            ),
             callSignalingKeepAlivePolicy = SipCallSignalingKeepAlivePolicy(
                 outgoingMode = profile.keepAliveModeMo,
                 incomingMode = profile.keepAliveModeMt,

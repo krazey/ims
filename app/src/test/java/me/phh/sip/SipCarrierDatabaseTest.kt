@@ -25,6 +25,9 @@ class SipCarrierDatabaseTest {
         encryptionAlgorithms = listOf("null", "des-ede3-cbc", "aes-cbc"),
         subscribeForReg = false,
         enableGruu = enableGruu,
+        registrationRetryBaseSeconds = 12,
+        registrationRetryMaxSeconds = 345,
+        registrationPcscfPolicyOn403 = "next_pcscf",
         services = setOf("mmtel", "smsip"),
         networks = setOf("lte", "wifi"),
         minSeSeconds = 120,
@@ -111,6 +114,12 @@ class SipCarrierDatabaseTest {
         require(resolved.securityClientEalgs == listOf("null", "aes-cbc"))
         require(resolved.minSeSeconds == 120)
         require(resolved.sessionExpiresSeconds == 2400)
+        require(resolved.registrationRecoveryPolicy.retryBaseMs == 12_000L)
+        require(resolved.registrationRecoveryPolicy.retryMaxMs == 345_000L)
+        require(
+            resolved.registrationRecoveryPolicy.forbiddenPcscfPolicy ==
+                RegistrationForbiddenPcscfPolicy.NEXT_PCSCF,
+        )
         require(resolved.callSignalingKeepAlivePolicy.startsForOutgoing(180))
         require(!resolved.callSignalingKeepAlivePolicy.startsForOutgoing(100))
         require(resolved.callSignalingKeepAlivePolicy.startsForIncoming)

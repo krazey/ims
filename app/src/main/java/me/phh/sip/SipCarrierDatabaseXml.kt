@@ -143,6 +143,11 @@ internal object SipCarrierDatabaseXml {
             subscribeForReg = parser.attribute("subscribe_for_reg")?.toBooleanStrictOrNull()
                 ?: true,
             enableGruu = parser.attribute("enable_gruu")?.toBooleanStrictOrNull() ?: true,
+            registrationRetryBaseSeconds = parser.attribute("reg_retry_base_time")?.toIntOrNull(),
+            registrationRetryMaxSeconds = parser.attribute("reg_retry_max_time")?.toIntOrNull(),
+            registrationPcscfPolicyOn403 = parser.attribute(
+                "reg_retry_pcscf_policy_on_403",
+            ),
             services = parser.csv("services").toSet(),
             networks = parser.csv("networks").toSet(),
             minSeSeconds = parser.attribute("min_se")?.toIntOrNull(),

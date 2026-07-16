@@ -14,11 +14,73 @@ import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_LTE
  * ID, following the same defaults-plus-overlays model as AOSP CarrierConfig.
  */
 
+enum class RegistrationForbiddenPcscfPolicy {
+    PERMANENT_STOP,
+    SAME_PCSCF,
+    NEXT_PCSCF;
+
+    companion object {
+        fun fromSamsung(raw: String?): RegistrationForbiddenPcscfPolicy? = when (
+            raw?.trim()?.lowercase()
+        ) {
+            "perm_stop" -> PERMANENT_STOP
+            "same_pcscf" -> SAME_PCSCF
+            "next_pcscf" -> NEXT_PCSCF
+            else -> null
+        }
+    }
+}
+
 data class SipRegistrationRecoveryPolicy(
     val blockPcscfOnRegistrationFailure: Boolean = true,
     val pcscfBlockMs: Long = 30_000L,
     val keepFrameworkRegistrationDuringTransientSipReconnect: Boolean = true,
+    val retryBaseMs: Long = 30_000L,
+    val retryMaxMs: Long = 1_800_000L,
+    val forbiddenPcscfPolicy: RegistrationForbiddenPcscfPolicy =
+        RegistrationForbiddenPcscfPolicy.NEXT_PCSCF,
 )
+
+internal data class SipRegistrationFailureDecision(
+    val retry: Boolean,
+    val blockCurrentPcscf: Boolean,
+    val retryAfterMs: Long? = null,
+)
+
+internal object SipRegistrationFailurePolicy {
+    fun retryAfterMs(response: SipResponse): Long? = response.headers["retry-after"]
+        ?.firstOrNull()
+        ?.substringBefore(';')
+        ?.trim()
+        ?.toLongOrNull()
+        ?.takeIf { it >= 0L }
+        ?.let { seconds -> seconds.coerceAtMost(Long.MAX_VALUE / 1_000L) * 1_000L }
+
+    fun decide(
+        response: SipResponse?,
+        policy: SipRegistrationRecoveryPolicy,
+    ): SipRegistrationFailureDecision {
+        val retryAfterMs = response?.let(::retryAfterMs)
+        if (response?.statusCode != 403) {
+            val retrySamePcscf = response?.statusCode == 503 &&
+                retryAfterMs != null && retryAfterMs in 1 until 32_000L
+            return SipRegistrationFailureDecision(
+                retry = true,
+                blockCurrentPcscf = !retrySamePcscf,
+                retryAfterMs = retryAfterMs,
+            )
+        }
+
+        return when (policy.forbiddenPcscfPolicy) {
+            RegistrationForbiddenPcscfPolicy.PERMANENT_STOP ->
+                SipRegistrationFailureDecision(false, false)
+            RegistrationForbiddenPcscfPolicy.SAME_PCSCF ->
+                SipRegistrationFailureDecision(true, false, retryAfterMs)
+            RegistrationForbiddenPcscfPolicy.NEXT_PCSCF ->
+                SipRegistrationFailureDecision(true, true, retryAfterMs)
+        }
+    }
+}
 
 data class SipSmsPolicy(
     val fallbackSipStatusCodes: Set<Int> = setOf(403, 404, 405, 408, 480, 488, 500, 501, 503, 603),

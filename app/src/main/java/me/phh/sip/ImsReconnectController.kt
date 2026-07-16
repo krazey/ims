@@ -83,9 +83,17 @@ internal class ImsReconnectController(
         }
     }
 
-    fun failConnectAndRetry(reason: String, baseDelayMs: Long = 5000L) {
+    fun failConnectAndRetry(
+        reason: String,
+        baseDelayMs: Long = 5000L,
+        maxDelayMs: Long = 120_000L,
+        explicitDelayMs: Long? = null,
+    ) {
         val failures = failureCount.incrementAndGet().coerceAtMost(6)
-        val delayMs = (baseDelayMs * (1L shl (failures - 1))).coerceAtMost(120_000L)
+        val exponentialDelayMs = baseDelayMs.coerceAtLeast(1L)
+            .times(1L shl (failures - 1))
+            .coerceAtMost(maxDelayMs.coerceAtLeast(1L))
+        val delayMs = explicitDelayMs?.coerceAtLeast(0L) ?: exponentialDelayMs
 
         Rlog.w(tag, "$reason; reporting deregistered and retrying IMS registration in ${delayMs}ms")
         reportFailure()
