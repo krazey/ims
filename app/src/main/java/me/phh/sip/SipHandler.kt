@@ -334,7 +334,31 @@ class SipHandler(
 
         private fun sendDatagram(bytes: ByteArray) {
             if (bytes.isEmpty()) return
-            val firstLine = bytes.toString(Charsets.US_ASCII)
+            val route = SipUdpResponseRouting.route(
+                responseBytes = bytes,
+                sourceAddress = remoteAddress,
+                sourcePort = remotePort,
+            )
+            val destinationAddress = route.destinationAddress ?: try {
+                network.getByName(route.destinationHost!!)
+            } catch (t: Throwable) {
+                Rlog.w(
+                    TAG,
+                    "Could not resolve SIP Via response target " +
+                        "${route.destinationHost}; using packet source",
+                    t,
+                )
+                remoteAddress
+            }
+            val destinationPort = if (
+                route.destinationAddress == null && destinationAddress === remoteAddress
+            ) {
+                remotePort
+            } else {
+                route.destinationPort
+            }
+            val routedBytes = route.bytes
+            val firstLine = routedBytes.toString(Charsets.US_ASCII)
                 .lineSequence()
                 .firstOrNull()
                 .orEmpty()
@@ -342,14 +366,15 @@ class SipHandler(
             val channel = serverSocketUdp.socket.channel
             if (channel != null) {
                 val sent = channel.send(
-                    java.nio.ByteBuffer.wrap(bytes),
-                    java.net.InetSocketAddress(remoteAddress, remotePort),
+                    java.nio.ByteBuffer.wrap(routedBytes),
+                    java.net.InetSocketAddress(destinationAddress, destinationPort),
                 )
-                if (sent != bytes.size) {
+                if (sent != routedBytes.size) {
                     Rlog.w(
                         TAG,
-                        "UDP SIP response partial send bytes=$sent expected=${bytes.size} " +
-                            "target=$remoteAddress:$remotePort firstLine=$firstLine",
+                        "UDP SIP response partial send bytes=$sent " +
+                            "expected=${routedBytes.size} target=$destinationAddress:" +
+                            "$destinationPort firstLine=$firstLine",
                     )
                 }
             } else {
@@ -357,14 +382,21 @@ class SipHandler(
                 // contend with receive(), but keeps the writer functional on all socket
                 // construction paths.
                 serverSocketUdp.socket.send(
-                    DatagramPacket(bytes, bytes.size, remoteAddress, remotePort),
+                    DatagramPacket(
+                        routedBytes,
+                        routedBytes.size,
+                        destinationAddress,
+                        destinationPort,
+                    ),
                 )
             }
 
             Rlog.d(
                 TAG,
-                "UDP SIP response sent bytes=${bytes.size} " +
-                    "target=$remoteAddress:$remotePort firstLine=$firstLine",
+                "UDP SIP response sent bytes=${routedBytes.size} " +
+                    "target=$destinationAddress:$destinationPort " +
+                    "packetSource=$remoteAddress:$remotePort " +
+                    "firstLine=$firstLine",
             )
         }
     }
@@ -2890,9 +2922,20 @@ fun onWfcDisabled(reason: String) {
     }
 
     fun registerCallback(response: SipResponse): Boolean {
-        // once we get there all register must be successful
-        // on failure just abort thread, ims will restart
-        require(response.statusCode == 200)
+        if (SipRegisterRefreshResponsePolicy.action(response.statusCode) ==
+            RegisterRefreshResponseAction.KEEP_REGISTRATION
+        ) {
+            // This callback handles REGISTER refreshes after the initial
+            // registration completed. A carrier may reject a service-tag
+            // update while the existing registration is still valid. Do not
+            // throw from the dispatcher and kill the long-lived SIP reader.
+            Rlog.w(
+                TAG,
+                "Keeping established IMS registration after REGISTER refresh " +
+                    "failed: ${response.statusCode} ${response.statusString}",
+            )
+            return false
+        }
 
         val registeredIdentity = SipRegisterSuccessParser.parse(response)
         if (registeredIdentity == null) {
