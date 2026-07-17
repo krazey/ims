@@ -10,12 +10,14 @@ class SipCarrierPolicyOverlayTest {
         val resolved = SipCarrierPolicyOverlay(
             booleans = mapOf(
                 "control_socket_udp" to true,
+                "register_gruu_supported" to false,
                 "require_nonsess_aka" to true,
             ),
             registerHeaders = mapOf("P-Test" to listOf("one")),
         ).applyTo(base)
 
         require(resolved.isControlSocketUdp)
+        require(!resolved.registerGruuSupported)
         require(resolved.requireNonsessAka)
         require(resolved.registerExtraHeaders["P-Test"] == listOf("one"))
         require(resolved.subscribeRegEvent == base.subscribeRegEvent)
@@ -47,6 +49,40 @@ class SipCarrierPolicyOverlayTest {
         require(resolved.smsPolicy.fallbackSipStatusCodes == setOf(403, 503))
         require(resolved.smsPolicy.rpResultWaitMs == 20_000L)
         require(resolved.plainTelShortCodes == setOf("542"))
+    }
+
+    @Test
+    fun `Tele2 profile replaces newer firmware call defaults`() {
+        val base = SipCarrierPolicy.defaultFor("401", "077").copy(
+            registerGruuSupported = true,
+            callSetupTimerPolicy = SipCallSetupTimerPolicy(
+                ringingTimeoutMs = 90_000L,
+                ringbackTimeoutMs = 90_000L,
+            ),
+            inviteFailurePolicy = SipInviteFailurePolicy(
+                csfbStatusCodes = setOf(380, 403, 500, 503, 1117),
+            ),
+        )
+        val resolved = SipCarrierPolicyOverlay(
+            booleans = mapOf(
+                "register_gruu_supported" to false,
+            ),
+            longs = mapOf(
+                "ringing_timeout_ms" to 120_000L,
+                "ringback_timeout_ms" to 120_000L,
+            ),
+            stringArrays = mapOf(
+                "invite_csfb_status_codes" to listOf("380", "403", "1117"),
+            ),
+        ).applyTo(base)
+
+        require(!resolved.registerGruuSupported)
+        require(resolved.callSetupTimerPolicy.ringingTimeoutMs == 120_000L)
+        require(resolved.callSetupTimerPolicy.ringbackTimeoutMs == 120_000L)
+        require(
+            resolved.inviteFailurePolicy.csfbStatusCodes ==
+                setOf(380, 403, 1117),
+        )
     }
 
     @Test

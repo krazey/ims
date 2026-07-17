@@ -109,6 +109,8 @@ internal data class SipCarrierPolicyOverlay(
             registerExtraHeaders = base.registerExtraHeaders + registerHeaders,
             subscribeRegEvent = booleans["subscribe_reg_event"]
                 ?: base.subscribeRegEvent,
+            registerGruuSupported = booleans["register_gruu_supported"]
+                ?: base.registerGruuSupported,
             forceCsfbDialStrings = stringArrays["force_csfb_dial_strings"]
                 ?.toSet() ?: base.forceCsfbDialStrings,
             plainTelShortCodes = stringArrays["plain_tel_short_codes"]
