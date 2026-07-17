@@ -22,6 +22,29 @@ internal data class SipCarrierPolicyOverlay(
             ?: fallback
 
     fun applyTo(base: SipCarrierPolicy): SipCarrierPolicy {
+        val controlSocketUdp = booleans["control_socket_udp"]
+        val transportPolicy = strings["transport_policy"]
+            ?.let { enumValueOrNull<SipTransportPolicy>(it) }
+            ?: controlSocketUdp?.let {
+                if (it) SipTransportPolicy.UDP else SipTransportPolicy.TCP
+            }
+            ?: base.transportPolicy
+        val preconditionPolicy = base.preconditionPolicy.copy(
+            cellular = booleans["precondition_cellular"]
+                ?: base.preconditionPolicy.cellular,
+            iwlan = booleans["precondition_iwlan"]
+                ?: base.preconditionPolicy.iwlan,
+        )
+        val serviceSwitches = base.serviceSwitches.toMutableMap().apply {
+            listOf(
+                "enable_ims" to "enableIms",
+                "enable_service_volte" to "enableServiceVolte",
+                "enable_service_vowifi" to "enableServiceVowifi",
+                "enable_service_smsip" to "enableServiceSmsip",
+            ).forEach { (overlayName, policyName) ->
+                booleans[overlayName]?.let { put(policyName, it) }
+            }
+        }
         val publicNumberPolicy = base.publicNumberNormalizationPolicy.copy(
             kazakhstanMobileWithoutCountryCode = booleans[
                 "kazakhstan_mobile_without_country_code"
@@ -102,8 +125,27 @@ internal data class SipCarrierPolicyOverlay(
         )
 
         return base.copy(
-            isControlSocketUdp = booleans["control_socket_udp"]
-                ?: base.isControlSocketUdp,
+            isControlSocketUdp = controlSocketUdp ?: base.isControlSocketUdp,
+            transportPolicy = transportPolicy,
+            ipVersionPolicy = strings["ip_version_policy"]
+                ?.let { enumValueOrNull<SipIpVersionPolicy>(it) }
+                ?: base.ipVersionPolicy,
+            ipsecSupported = booleans["ipsec_supported"]
+                ?: base.ipsecSupported,
+            preconditionPolicy = preconditionPolicy,
+            roamingSupported = booleans["roaming_supported"]
+                ?: base.roamingSupported,
+            supportedNetworks = stringArrays["supported_networks"]
+                ?.map { it.trim().lowercase() }
+                ?.filter(String::isNotEmpty)
+                ?.toSet()
+                ?: base.supportedNetworks,
+            supportedServices = stringArrays["supported_services"]
+                ?.map { it.trim().lowercase() }
+                ?.filter(String::isNotEmpty)
+                ?.toSet()
+                ?: base.supportedServices,
+            serviceSwitches = serviceSwitches,
             requireNonsessAka = booleans["require_nonsess_aka"]
                 ?: base.requireNonsessAka,
             registerExtraHeaders = base.registerExtraHeaders + registerHeaders,
@@ -133,6 +175,25 @@ internal data class SipCarrierPolicyOverlay(
             minSeSeconds = longs["min_se_seconds"]?.toInt() ?: base.minSeSeconds,
             sessionExpiresSeconds = longs["session_expires_seconds"]?.toInt()
                 ?: base.sessionExpiresSeconds,
+            registrationExpiresSeconds = longs["registration_expires_seconds"]
+                ?.toInt() ?: base.registrationExpiresSeconds,
+            mssSize = longs["mss_size"]?.toInt() ?: base.mssSize,
+            pcscfPreference = longs["pcscf_preference"]?.toInt()
+                ?: base.pcscfPreference,
+            sosUrnRequired = booleans["sos_urn_required"]
+                ?: base.sosUrnRequired,
+            blockDeregistrationOnSrvcc = booleans["block_deregistration_on_srvcc"]
+                ?: base.blockDeregistrationOnSrvcc,
+            lastPaniHeader = strings["last_pani_header"]
+                ?: base.lastPaniHeader,
+            supportedGeolocationPhase = longs["supported_geolocation_phase"]
+                ?.toInt() ?: base.supportedGeolocationPhase,
+            audioCodecs = stringArrays["audio_codecs"]
+                ?.map(String::trim)
+                ?.filter(String::isNotEmpty)
+                ?.toSet()
+                ?: base.audioCodecs,
+            evsEnabled = booleans["evs_enabled"] ?: base.evsEnabled,
             fallbackEmergencyDialStrings = stringArrays["fallback_emergency_dial_strings"]
                 ?.toSet() ?: base.fallbackEmergencyDialStrings,
             publicNumberNormalizationPolicy = publicNumberPolicy,

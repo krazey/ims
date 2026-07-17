@@ -2,9 +2,13 @@
 package me.phh.sip
 
 import android.content.Context
+import android.telephony.Rlog
 import android.telephony.TelephonyManager
 import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN
 import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_LTE
+import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.InetAddress
 
 /**
  * Carrier-specific IMS behavior for the resolved home operator.
@@ -28,6 +32,58 @@ enum class RegistrationForbiddenPcscfPolicy {
             "next_pcscf" -> NEXT_PCSCF
             else -> null
         }
+    }
+}
+
+enum class SipIpVersionPolicy {
+    ANY,
+    IPV4,
+    IPV6,
+    IPV4V6;
+
+    fun accepts(address: InetAddress): Boolean = when (this) {
+        ANY, IPV4V6 -> address is Inet4Address || address is Inet6Address
+        IPV4 -> address is Inet4Address
+        IPV6 -> address is Inet6Address
+    }
+
+    companion object {
+        fun fromSamsung(raw: String): SipIpVersionPolicy = when (raw.lowercase()) {
+            "ipv4" -> IPV4
+            "ipv6" -> IPV6
+            "ipv4v6" -> IPV4V6
+            else -> ANY
+        }
+    }
+}
+
+enum class SipTransportPolicy {
+    DEFAULT,
+    TCP,
+    UDP,
+    UDP_PREFERRED,
+    TLS;
+
+    val requiresUdp: Boolean get() = this == UDP
+
+    companion object {
+        fun fromSamsung(raw: String): SipTransportPolicy = when (raw.lowercase()) {
+            "tcp" -> TCP
+            "udp" -> UDP
+            "udp-preferred" -> UDP_PREFERRED
+            "tls" -> TLS
+            else -> DEFAULT
+        }
+    }
+}
+
+data class SipPreconditionPolicy(
+    val cellular: Boolean = true,
+    val iwlan: Boolean = false,
+) {
+    fun enabledFor(registrationTech: Int): Boolean = when (registrationTech) {
+        REGISTRATION_TECH_IWLAN -> iwlan
+        else -> cellular
     }
 }
 
@@ -186,6 +242,14 @@ data class SipCarrierPolicy(
     val mcc: String,
     val mnc: String,
     val isControlSocketUdp: Boolean = false,
+    val transportPolicy: SipTransportPolicy = SipTransportPolicy.DEFAULT,
+    val ipVersionPolicy: SipIpVersionPolicy = SipIpVersionPolicy.ANY,
+    val ipsecSupported: Boolean = true,
+    val preconditionPolicy: SipPreconditionPolicy = SipPreconditionPolicy(),
+    val roamingSupported: Boolean = true,
+    val supportedNetworks: Set<String> = emptySet(),
+    val supportedServices: Set<String> = emptySet(),
+    val serviceSwitches: Map<String, Boolean> = emptyMap(),
     val requireNonsessAka: Boolean = false,
     val registerExtraHeaders: SipHeadersMap = emptyMap(),
     val subscribeRegEvent: Boolean = true,
@@ -200,6 +264,23 @@ data class SipCarrierPolicy(
     val securityClientEalgs: List<String> = DEFAULT_SECURITY_CLIENT_EALGS,
     val minSeSeconds: Int = 90,
     val sessionExpiresSeconds: Int = 1800,
+    val registrationExpiresSeconds: Int = 7200,
+    val mssSize: Int = 1500,
+    val pcscfPreference: Int = 0,
+    val sosUrnRequired: Boolean = false,
+    val blockDeregistrationOnSrvcc: Boolean = false,
+    val lastPaniHeader: String = "",
+    val supportedGeolocationPhase: Int = 0,
+    val audioCodecs: Set<String> = emptySet(),
+    val evsEnabled: Boolean = false,
+    val emergencyDomain: String? = null,
+    val emergencyCsfbStatusRules: Set<String> = emptySet(),
+    val noSimEmergencyDomain: String? = null,
+    val supplementaryServiceDomain: String? = null,
+    val supplementaryServiceCallForwardUriType: String? = null,
+    val srvccVersion: Int? = null,
+    val defaultSmsFallbackEnabled: Boolean? = null,
+    val iwlanPaniFormat: String? = null,
     val fallbackEmergencyDialStrings: Set<String> = emptySet(),
     val publicNumberNormalizationPolicy: SipPublicNumberNormalizationPolicy =
         SipPublicNumberNormalizationPolicy(),
@@ -227,6 +308,45 @@ data class SipCarrierPolicy(
 
     fun normalizePublicNumberToE164(stripped: String): String? =
         publicNumberNormalizationPolicy.normalizeToE164(stripped)
+
+    fun useUdpControlSocket(): Boolean =
+        isControlSocketUdp || transportPolicy.requiresUdp
+
+    fun preconditionEnabled(registrationTech: Int): Boolean =
+        preconditionPolicy.enabledFor(registrationTech)
+
+    fun supportsNetwork(registrationTech: Int): Boolean {
+        if (supportedNetworks.isEmpty()) return true
+        return when (registrationTech) {
+            REGISTRATION_TECH_IWLAN -> "wifi" in supportedNetworks
+            REGISTRATION_TECH_LTE ->
+                "lte" in supportedNetworks || "nr" in supportedNetworks
+            else -> true
+        }
+    }
+
+    fun serviceEnabled(name: String, profileToken: String): Boolean =
+        serviceSwitches[name] ?: (supportedServices.isEmpty() || profileToken in supportedServices)
+
+    fun imsEnabled(): Boolean = serviceSwitches["enableIms"] != false
+
+    fun voiceEnabled(registrationTech: Int): Boolean =
+        imsEnabled() &&
+            supportsNetwork(registrationTech) &&
+            when (registrationTech) {
+                REGISTRATION_TECH_IWLAN -> serviceEnabled("enableServiceVowifi", "mmtel")
+                else -> serviceEnabled("enableServiceVolte", "mmtel")
+            }
+
+    fun smsIpEnabled(registrationTech: Int): Boolean =
+        imsEnabled() &&
+            supportsNetwork(registrationTech) &&
+            serviceEnabled("enableServiceSmsip", "smsip")
+
+    fun allowsAudioCodec(vararg names: String): Boolean =
+        audioCodecs.isEmpty() || names.any { candidate ->
+            audioCodecs.any { it.equals(candidate, ignoreCase = true) }
+        }
 
     fun phoneContextForLocalTelUri(realm: String): String {
         val candidate = realm.trim()
@@ -368,6 +488,11 @@ data class SipCarrierSettings(
 ) {
     val mccMnc: String get() = policy.mccMnc
     val isControlSocketUdp: Boolean get() = policy.isControlSocketUdp
+    val transportPolicy: SipTransportPolicy get() = policy.transportPolicy
+    val ipVersionPolicy: SipIpVersionPolicy get() = policy.ipVersionPolicy
+    val ipsecSupported: Boolean get() = policy.ipsecSupported
+    val registrationExpiresSeconds: Int get() = policy.registrationExpiresSeconds
+    val mssSize: Int get() = policy.mssSize
     val requireNonsessAka: Boolean get() = policy.requireNonsessAka
     val registerExtraHeaders: SipHeadersMap get() = policy.registerExtraHeaders
     val subscribeRegEvent: Boolean get() = policy.subscribeRegEvent
@@ -383,6 +508,42 @@ data class SipCarrierSettings(
         get() = policy.outgoingTargetUriType
     val minSeSeconds: Int get() = policy.minSeSeconds
     val sessionExpiresSeconds: Int get() = policy.sessionExpiresSeconds
+
+    fun useUdpControlSocket(): Boolean = policy.useUdpControlSocket()
+
+    fun imsEnabled(): Boolean = policy.imsEnabled()
+
+    fun preconditionEnabled(registrationTech: Int): Boolean =
+        policy.preconditionEnabled(registrationTech)
+
+    fun supportsNetwork(registrationTech: Int): Boolean =
+        policy.supportsNetwork(registrationTech)
+
+    fun voiceEnabled(registrationTech: Int): Boolean =
+        policy.voiceEnabled(registrationTech)
+
+    fun smsIpEnabled(registrationTech: Int): Boolean =
+        policy.smsIpEnabled(registrationTech)
+
+    fun allowsAudioCodec(vararg names: String): Boolean =
+        policy.allowsAudioCodec(*names)
+
+    fun effectivePolicyLog(): String {
+        val record = databaseRecord
+        val profile = record?.voiceProfile
+        return "mccmnc=$mccMnc mno=${record?.mapping?.mnoName ?: "none"} " +
+            "profile=${profile?.name ?: "default"} source=${record?.source ?: "built-in"} " +
+            "transport=${policy.transportPolicy} udp=${useUdpControlSocket()} " +
+            "ip=${policy.ipVersionPolicy} ipsec=${policy.ipsecSupported} " +
+            "precondition=${policy.preconditionPolicy} roaming=${policy.roamingSupported} " +
+            "networks=${policy.supportedNetworks} services=${policy.supportedServices} " +
+            "switches=${policy.serviceSwitches} uri=${policy.outgoingTargetUriType} " +
+            "subscribe=${policy.subscribeRegEvent} gruu=${policy.registerGruuSupported} " +
+            "regExpires=${policy.registrationExpiresSeconds} " +
+            "sessionExpires=${policy.sessionExpiresSeconds} minSe=${policy.minSeSeconds} " +
+            "mss=${policy.mssSize} codecs=${policy.audioCodecs} evs=${policy.evsEnabled} " +
+            "csfb=${policy.inviteFailurePolicy.csfbStatusRules}"
+    }
 
     // Legacy names kept while callers are converted.
     val registerNetworkHeaders: SipHeadersMap get() = policy.registerExtraHeaders
@@ -460,6 +621,38 @@ data class SipCarrierSettings(
             return mcc to rawMnc.padStart(3, '0')
         }
 
+        private fun readTelephonyGroupId(
+            telephonyManager: TelephonyManager,
+            methodName: String,
+        ): String {
+            try {
+                return TelephonyManager::class.java
+                    .getMethod(methodName)
+                    .invoke(telephonyManager)
+                    ?.toString()
+                    .orEmpty()
+            } catch (_: ReflectiveOperationException) {
+                // GID2 is subscription-scoped on some platform releases.
+            } catch (_: SecurityException) {
+                return ""
+            }
+
+            return try {
+                val subscriptionId = TelephonyManager::class.java
+                    .getMethod("getSubscriptionId")
+                    .invoke(telephonyManager) as Int
+                TelephonyManager::class.java
+                    .getMethod(methodName, Int::class.javaPrimitiveType!!)
+                    .invoke(telephonyManager, subscriptionId)
+                    ?.toString()
+                    .orEmpty()
+            } catch (_: ReflectiveOperationException) {
+                ""
+            } catch (_: SecurityException) {
+                ""
+            }
+        }
+
         fun fromSimOperator(simOperator: String): SipCarrierSettings {
             val (mcc, mnc) = parseSimOperator(simOperator)
             val policy = SipCarrierPolicy.defaultFor(mcc, mnc)
@@ -491,6 +684,14 @@ data class SipCarrierSettings(
                     } catch (_: Throwable) {
                         ""
                     },
+                    gid1 = readTelephonyGroupId(
+                        telephonyManager,
+                        "getGroupIdLevel1",
+                    ),
+                    gid2 = readTelephonyGroupId(
+                        telephonyManager,
+                        "getGroupIdLevel2",
+                    ),
                     spn = try {
                         telephonyManager.simOperatorName.orEmpty()
                     } catch (_: Throwable) {
@@ -510,7 +711,31 @@ data class SipCarrierSettings(
                 policy = policy,
                 carrierId = carrierId,
                 databaseRecord = databaseRecord,
-            )
+            ).also { settings ->
+                Rlog.i("PHH CarrierPolicy", settings.effectivePolicyLog())
+                if (settings.policy.evsEnabled) {
+                    Rlog.w(
+                        "PHH CarrierPolicy",
+                        "Carrier enables EVS but PhhIms has no EVS media codec; " +
+                            "falling back to allowed AMR codecs",
+                    )
+                }
+                if (settings.policy.supportedGeolocationPhase > 0) {
+                    Rlog.w(
+                        "PHH CarrierPolicy",
+                        "Carrier requests geolocation phase " +
+                            "${settings.policy.supportedGeolocationPhase}; " +
+                            "PIDF/geolocation signaling is not implemented",
+                    )
+                }
+                if (settings.transportPolicy == SipTransportPolicy.UDP_PREFERRED) {
+                    Rlog.i(
+                        "PHH CarrierPolicy",
+                        "Samsung udp-preferred remains TCP unless negotiation or a " +
+                            "manual overlay explicitly selects UDP",
+                    )
+                }
+            }
         }
     }
 }

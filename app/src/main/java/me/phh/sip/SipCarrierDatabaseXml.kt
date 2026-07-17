@@ -23,6 +23,13 @@ internal object SipCarrierDatabaseXml {
         var csfbStatusRules: Set<String> = emptySet()
         var voiceCsfbStatusRules: Set<String> = emptySet()
         var emergencyDomain: String? = null
+        var emergencyCsfbStatusRules: Set<String> = emptySet()
+        var noSimEmergencyDomain: String? = null
+        var supplementaryServiceDomain: String? = null
+        var supplementaryServiceCallForwardUriType: String? = null
+        var srvccVersion: Int? = null
+        var defaultSmsFallbackEnabled: Boolean? = null
+        var iwlanPaniFormat: String? = null
         var globalSettingsAreExact = false
         var source = "Samsung IMS database"
         var verification = "firmware_reference"
@@ -49,6 +56,7 @@ internal object SipCarrierDatabaseXml {
                                     gid2 = parser.attribute("gid2").orEmpty(),
                                     spn = parser.attribute("spname").orEmpty(),
                                     blockGc = parser.attribute("block_gc").toBoolean(),
+                                    note = parser.attribute("note").orEmpty(),
                                 )
                             }
                         }
@@ -89,6 +97,23 @@ internal object SipCarrierDatabaseXml {
                                     "voice_csfb_error_code_list",
                                 ).toSet()
                                 emergencyDomain = parser.attribute("emergency_domain_setting")
+                                emergencyCsfbStatusRules = parser.csv(
+                                    "e911_csfb_error_code_list",
+                                ).toSet()
+                                noSimEmergencyDomain = parser.attribute(
+                                    "no_sim_emergency_domain_setting",
+                                )
+                                supplementaryServiceDomain = parser.attribute(
+                                    "ss_domain_setting",
+                                )
+                                supplementaryServiceCallForwardUriType = parser.attribute(
+                                    "ss_cf_uri_type",
+                                )
+                                srvccVersion = parser.attribute("srvcc_version")?.toIntOrNull()
+                                defaultSmsFallbackEnabled = parser.attribute(
+                                    "enable_default_sms_fallback",
+                                )?.toBooleanStrictOrNull()
+                                iwlanPaniFormat = parser.attribute("iwlan_pani_format")
                                 globalSettingsAreExact = exact
                             }
                         }
@@ -113,6 +138,14 @@ internal object SipCarrierDatabaseXml {
             csfbStatusRules = csfbStatusRules,
             voiceCsfbStatusRules = voiceCsfbStatusRules,
             emergencyDomain = emergencyDomain,
+            emergencyCsfbStatusRules = emergencyCsfbStatusRules,
+            noSimEmergencyDomain = noSimEmergencyDomain,
+            supplementaryServiceDomain = supplementaryServiceDomain,
+            supplementaryServiceCallForwardUriType =
+                supplementaryServiceCallForwardUriType,
+            srvccVersion = srvccVersion,
+            defaultSmsFallbackEnabled = defaultSmsFallbackEnabled,
+            iwlanPaniFormat = iwlanPaniFormat,
             source = source,
             verification = verification,
         ).also {
@@ -148,6 +181,7 @@ internal object SipCarrierDatabaseXml {
             registrationPcscfPolicyOn403 = parser.attribute(
                 "reg_retry_pcscf_policy_on_403",
             ),
+            registrationExpiresSeconds = parser.attribute("reg_expires")?.toIntOrNull(),
             services = parser.csv("services").toSet(),
             networks = parser.csv("networks").toSet(),
             minSeSeconds = parser.attribute("min_se")?.toIntOrNull(),
@@ -159,6 +193,17 @@ internal object SipCarrierDatabaseXml {
             keepAliveModeMt = parser.attribute("keep_alive_mode_mt") ?: "none",
             keepAliveIntervalMs = parser.attribute("keep_alive_interval")?.toLongOrNull(),
             mssSize = parser.attribute("mss_size")?.toIntOrNull(),
+            pcscfPreference = parser.attribute("pcscf_pref")?.toIntOrNull(),
+            sosUrnRequired = parser.attribute("sos_urn_required").toBoolean(),
+            blockDeregistrationOnSrvcc = parser.attribute(
+                "block_deregi_on_srvcc",
+            ).toBoolean(),
+            lastPaniHeader = parser.attribute("last_pani_header").orEmpty(),
+            supportedGeolocationPhase = parser.attribute(
+                "supported_geolocation_phase",
+            )?.toIntOrNull(),
+            audioCodecs = parser.csv("audio_codec"),
+            enableEvsCodec = parser.attribute("enable_evs_codec").toBoolean(),
         )
 
     private fun readBooleanAttributes(parser: XmlPullParser): Map<String, Boolean> {

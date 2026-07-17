@@ -18,6 +18,7 @@ data class SipCarrierDatabaseMapping(
     val gid2: String = "",
     val spn: String = "",
     val blockGc: Boolean = false,
+    val note: String = "",
 ) {
     val specificity: Int
         get() = listOf(subset, gid1, gid2, spn).count { it.isNotEmpty() }
@@ -55,6 +56,7 @@ data class SipCarrierDatabaseProfile(
     val registrationRetryBaseSeconds: Int?,
     val registrationRetryMaxSeconds: Int?,
     val registrationPcscfPolicyOn403: String?,
+    val registrationExpiresSeconds: Int? = null,
     val services: Set<String>,
     val networks: Set<String>,
     val minSeSeconds: Int?,
@@ -66,6 +68,13 @@ data class SipCarrierDatabaseProfile(
     val keepAliveModeMt: String,
     val keepAliveIntervalMs: Long?,
     val mssSize: Int?,
+    val pcscfPreference: Int? = null,
+    val sosUrnRequired: Boolean = false,
+    val blockDeregistrationOnSrvcc: Boolean = false,
+    val lastPaniHeader: String = "",
+    val supportedGeolocationPhase: Int? = null,
+    val audioCodecs: List<String> = emptyList(),
+    val enableEvsCodec: Boolean = false,
 )
 
 data class SipCarrierDatabaseRecord(
@@ -75,6 +84,13 @@ data class SipCarrierDatabaseRecord(
     val csfbStatusRules: Set<String>,
     val voiceCsfbStatusRules: Set<String>,
     val emergencyDomain: String?,
+    val emergencyCsfbStatusRules: Set<String> = emptySet(),
+    val noSimEmergencyDomain: String? = null,
+    val supplementaryServiceDomain: String? = null,
+    val supplementaryServiceCallForwardUriType: String? = null,
+    val srvccVersion: Int? = null,
+    val defaultSmsFallbackEnabled: Boolean? = null,
+    val iwlanPaniFormat: String? = null,
     val source: String = "Samsung S26 imsservice",
     val verification: String = "firmware_reference",
 ) {
@@ -98,6 +114,17 @@ data class SipCarrierDatabaseRecord(
         }
 
         return base.copy(
+            transportPolicy = SipTransportPolicy.fromSamsung(profile.transport),
+            ipVersionPolicy = SipIpVersionPolicy.fromSamsung(profile.ipVersion),
+            ipsecSupported = profile.supportIpsec,
+            preconditionPolicy = SipPreconditionPolicy(
+                cellular = profile.usePrecondition,
+                iwlan = profile.wifiPrecondition,
+            ),
+            roamingSupported = profile.supportRoaming,
+            supportedNetworks = profile.networks,
+            supportedServices = profile.services,
+            serviceSwitches = serviceSwitches,
             subscribeRegEvent = profile.subscribeForReg,
             registerGruuSupported = profile.enableGruu,
             outgoingTargetUriType = uriType,
@@ -108,6 +135,35 @@ data class SipCarrierDatabaseRecord(
             minSeSeconds = profile.minSeSeconds.positiveOr(base.minSeSeconds),
             sessionExpiresSeconds = profile.sessionExpiresSeconds.positiveOr(
                 base.sessionExpiresSeconds,
+            ),
+            registrationExpiresSeconds = profile.registrationExpiresSeconds
+                .positiveOr(base.registrationExpiresSeconds),
+            mssSize = profile.mssSize?.takeIf { it in 300..10_000 }
+                ?: base.mssSize,
+            pcscfPreference = profile.pcscfPreference?.takeIf { it in 0..5 }
+                ?: base.pcscfPreference,
+            sosUrnRequired = profile.sosUrnRequired,
+            blockDeregistrationOnSrvcc = profile.blockDeregistrationOnSrvcc,
+            lastPaniHeader = profile.lastPaniHeader,
+            supportedGeolocationPhase = profile.supportedGeolocationPhase
+                ?.takeIf { it in 0..4 }
+                ?: base.supportedGeolocationPhase,
+            audioCodecs = profile.audioCodecs.toSet(),
+            evsEnabled = profile.enableEvsCodec,
+            emergencyDomain = emergencyDomain,
+            emergencyCsfbStatusRules = emergencyCsfbStatusRules,
+            noSimEmergencyDomain = noSimEmergencyDomain,
+            supplementaryServiceDomain = supplementaryServiceDomain,
+            supplementaryServiceCallForwardUriType =
+                supplementaryServiceCallForwardUriType,
+            srvccVersion = srvccVersion,
+            defaultSmsFallbackEnabled = defaultSmsFallbackEnabled,
+            iwlanPaniFormat = iwlanPaniFormat,
+            smsPolicy = base.smsPolicy.copy(
+                fallbackSipStatusCodes = when (defaultSmsFallbackEnabled) {
+                    false -> emptySet()
+                    else -> base.smsPolicy.fallbackSipStatusCodes
+                },
             ),
             registrationRecoveryPolicy = base.registrationRecoveryPolicy.copy(
                 retryBaseMs = profile.registrationRetryBaseSeconds
