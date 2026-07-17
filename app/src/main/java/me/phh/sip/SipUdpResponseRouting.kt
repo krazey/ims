@@ -8,6 +8,7 @@ internal data class SipUdpResponseRoute(
     val destinationAddress: InetAddress?,
     val destinationHost: String?,
     val destinationPort: Int,
+    val diagnostic: String,
 )
 
 internal object SipUdpResponseRouting {
@@ -61,6 +62,9 @@ internal object SipUdpResponseRouting {
             destinationAddress = destinationAddress,
             destinationHost = destinationHost,
             destinationPort = destinationPort,
+            diagnostic = "viaSentBy=${sentBy.host}:${sentBy.port} " +
+                "rportPresent=$rportPresent explicitRport=$explicitRport " +
+                "maddr=${params["maddr"]} received=${params["received"]}",
         )
     }
 
@@ -73,6 +77,7 @@ internal object SipUdpResponseRouting {
         destinationAddress = sourceAddress,
         destinationHost = null,
         destinationPort = sourcePort,
+        diagnostic = "packet-source fallback: no parseable top Via",
     )
 
     private fun topViaValueRange(text: String): IntRange? {

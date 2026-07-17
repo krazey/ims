@@ -54,6 +54,9 @@ class SipHandler(
     private val amrWbMediaCodecAvailable: Boolean by lazy {
         SipAudioCodecNegotiator.isMediaCodecAvailableFor(TAG, SipAudioCodecs.AMR_WB)
     }
+    private val carrierAmrWbMediaCodecAvailable: Boolean
+        get() = amrWbMediaCodecAvailable &&
+            carrierSettings.allowsAudioCodec("AMR-WB", "AMRBE-WB")
 
     private val imsUplinkGainQ8: Int by lazy {
         SipUplinkGain.configuredGainQ8()
@@ -136,7 +139,7 @@ class SipHandler(
     }
 
 
-    val isControlSocketUdp = carrierSettings.isControlSocketUdp
+    val isControlSocketUdp = carrierSettings.useUdpControlSocket()
     val requireNonsessAka = carrierSettings.requireNonsessAka
 
     //private val realm = "ims.mnc$mnc.mcc$mcc.3gppnetwork.org"
@@ -396,6 +399,7 @@ class SipHandler(
                 "UDP SIP response sent bytes=${routedBytes.size} " +
                     "target=$destinationAddress:$destinationPort " +
                     "packetSource=$remoteAddress:$remotePort " +
+                    "route=${route.diagnostic} " +
                     "firstLine=$firstLine",
             )
         }
@@ -430,6 +434,22 @@ class SipHandler(
     private var imsReady = false
     @Volatile
     private var mmtelVoiceEnabled = true
+    private fun carrierAllowsCurrentRoaming(): Boolean =
+        carrierSettings.policy.roamingSupported ||
+            try {
+                !subTelephonyManager.isNetworkRoaming
+            } catch (_: Throwable) {
+                true
+            }
+
+    private fun effectiveVoiceEnabled(): Boolean =
+        mmtelVoiceEnabled &&
+            carrierSettings.voiceEnabled(imsRegistrationTech) &&
+            carrierAllowsCurrentRoaming()
+
+    private fun effectiveSmsIpEnabled(): Boolean =
+        carrierSettings.smsIpEnabled(imsRegistrationTech) &&
+            carrierAllowsCurrentRoaming()
     var imsReadyCallback: (() -> Unit)? = null
     var imsFailureCallback: (() -> Unit)? = null
     var imsRegisteringCallback: ((Int) -> Unit)? = null
@@ -518,6 +538,7 @@ private val smsHandler = SipSmsHandler(
         smsSipFailureListener = { smsRealm, statusCode -> smsFallbackPolicy.learnFromSipMessageFailure(smsRealm, statusCode) },
         sipWriteFailureListener = { reason -> reconnectIms(reason) },
         timeoutScheduler = { delayMs, action -> myHandler.postDelayed({ action() }, delayMs) },
+        registrationTechProvider = { imsRegistrationTech },
     )
 
     private val sessionRefresher = SipSessionRefresher(
@@ -953,10 +974,10 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
     }
 
     private fun getPcscfServers(lp: LinkProperties): List<InetAddress> =
-        ImsNetworkState.getPcscfServers(lp)
+        ImsNetworkState.getPcscfServers(lp, carrierSettings.ipVersionPolicy)
 
     private fun getImsLocalAddress(lp: LinkProperties): InetAddress? =
-        ImsNetworkState.getImsLocalAddress(lp)
+        ImsNetworkState.getImsLocalAddress(lp, carrierSettings.ipVersionPolicy)
 
     private fun cleanupExpiredBlockedPcscfs(nowMs: Long = SystemClock.uptimeMillis()) {
         val expiredPcscfs = blockedPcscfUntilUptimeMs.entries
@@ -1880,10 +1901,31 @@ fun onWfcDisabled(reason: String) {
             mnc = mnc,
             mcc = mcc,
             preferredPcscf = preferredPcscf,
+            ipVersionPolicy = carrierSettings.ipVersionPolicy,
         )) {
             is ImsNetworkEndpointResolution.Success -> {
                 localAddr = endpoint.localAddr
                 pcscfAddr = endpoint.pcscfAddr
+                if (!carrierSettings.ipVersionPolicy.accepts(localAddr) ||
+                    !carrierSettings.ipVersionPolicy.accepts(pcscfAddr)
+                ) {
+                    Rlog.w(
+                        TAG,
+                        "Carrier IP policy ${carrierSettings.ipVersionPolicy} could " +
+                            "not be satisfied by the IMS bearer; using " +
+                            "local=${localAddr.hostAddress} " +
+                            "pcscf=${pcscfAddr.hostAddress}",
+                    )
+                }
+                if (!carrierSettings.supportsNetwork(imsRegistrationTech)) {
+                    Rlog.w(
+                        TAG,
+                        "IMS bearer access ${registrationTechName(imsRegistrationTech)} " +
+                            "is outside carrier profile networks=" +
+                            "${carrierSettings.policy.supportedNetworks}; " +
+                            "registration continues but services stay disabled",
+                    )
+                }
             }
 
             ImsNetworkEndpointResolution.WaitingForPcscf -> {
@@ -1902,6 +1944,13 @@ fun onWfcDisabled(reason: String) {
 
 
     private fun setupPlainSipSocketsAndSendInitialRegister() {
+        Rlog.i(
+            TAG,
+            "Opening SIP control transport effective=" +
+                "${if (isControlSocketUdp) "UDP" else "TCP"} " +
+                "database=${carrierSettings.transportPolicy} " +
+                "ipsec=${carrierSettings.ipsecSupported} mss=${carrierSettings.mssSize}",
+        )
         plainSocket = if (isControlSocketUdp)
             SipConnectionUdp(network, pcscfAddr, localAddr)
         else
@@ -2002,6 +2051,16 @@ fun onWfcDisabled(reason: String) {
         akaResult: SipAkaResult,
     ): Int {
         var portS = 5060
+        if (!carrierSettings.ipsecSupported) {
+            if (plainRegReply.headers.containsKey("security-server")) {
+                Rlog.w(
+                    TAG,
+                    "Ignoring unexpected Security-Server because the selected " +
+                        "carrier profile disables IPsec",
+                )
+            }
+            return portS
+        }
         // Check if there is a security-server header in the reply
         if (plainRegReply.headers.containsKey("security-server")) {
             val securityServer = plainRegReply.headers["security-server"]!!
@@ -2029,6 +2088,21 @@ fun onWfcDisabled(reason: String) {
 
             val spiC = securityServerParams["spi-c"]!!.toUInt().toInt()
             val serverSpiC = allocateSecurityParameterIndexWithWatchdog("server SPI-C", pcscfAddr, spiC)
+
+            Rlog.i(
+                TAG,
+                "Selected protected SIP path local=${localAddr.hostAddress} " +
+                    "pcscf=${pcscfAddr.hostAddress} " +
+                    "clientPort=${socket.gLocalPort()} " +
+                    "serverTcpPort=${serverSocket.localPort} " +
+                    "serverUdpPort=${serverSocketUdp.localPort} " +
+                    "portC=${securityServerParams["port-c"]} " +
+                    "portS=${securityServerParams["port-s"]} " +
+                    "spiC=${securityServerParams["spi-c"]} " +
+                    "spiS=${securityServerParams["spi-s"]} " +
+                    "alg=${securityServerParams["alg"]} " +
+                    "ealg=${securityServerParams["ealg"]}",
+            )
 
             ipsecSettings = SipIpsecSettings(
                 clientSpiS = clientSpiS,
@@ -2841,6 +2915,11 @@ fun onWfcDisabled(reason: String) {
     fun getVolteNetwork() {
         // TODO add something similar for VoWifi ipsec tunnel?
         Rlog.d(TAG, "Requesting IMS network ${imsDualSimDebugContext()}")
+        if (!carrierSettings.imsEnabled()) {
+            Rlog.w(TAG, "Carrier database disables IMS; not requesting an IMS bearer")
+            imsFailureCallback?.invoke()
+            return
+        }
         if (!isRatReadyForImsNetworkRequest()) {
             Rlog.w(TAG, "Deferring IMS network request until LTE/NR/IWLAN is back")
             scheduleImsNetworkRequestRestart("RAT not ready for IMS network request", 3_000L)
@@ -2866,7 +2945,9 @@ fun onWfcDisabled(reason: String) {
             serverPort = serverSocket.localPort,
             imei = imei,
             imsi = imsi,
-            voiceEnabled = mmtelVoiceEnabled,
+            voiceEnabled = effectiveVoiceEnabled(),
+            smsIpEnabled = effectiveSmsIpEnabled(),
+            expiresSeconds = carrierSettings.registrationExpiresSeconds,
         )
         contact = update.contact
         registerHeaders += update.headers
@@ -2879,7 +2960,9 @@ fun onWfcDisabled(reason: String) {
             serverPort = serverSocket.localPort,
             imei = imei,
             imsi = imsi,
-            voiceEnabled = mmtelVoiceEnabled,
+            voiceEnabled = effectiveVoiceEnabled(),
+            smsIpEnabled = effectiveSmsIpEnabled(),
+            expiresSeconds = carrierSettings.registrationExpiresSeconds,
         ).contact
     }
 
@@ -2911,6 +2994,8 @@ fun onWfcDisabled(reason: String) {
             useSelectedSecurityClient = registerTargetRealm != realm,
             forceSecurityAgreementNullEalg = false,
             supportGruu = carrierSettings.registerGruuSupported,
+            supportSecurityAgreement = carrierSettings.ipsecSupported,
+            registrationExpiresSeconds = carrierSettings.registrationExpiresSeconds,
         )
         val registerBytesWithNetworkHeaders = addCarrierRegisterNetworkHeaders(msg.toByteArray())
         Rlog.d(TAG, "Sending ${msg.safeLogSummary()}")
@@ -2975,6 +3060,7 @@ fun onWfcDisabled(reason: String) {
             socket = socket,
             serverPort = serverSocket.localPort,
             imei = imei,
+            supportSecurityAgreement = carrierSettings.ipsecSupported,
         )
         setResponseCallback(msg.headers["call-id"]!![0], ::subscribeCallback)
         Rlog.d(TAG, "Sending ${msg.safeLogSummary()}")
@@ -4403,6 +4489,11 @@ fun onWfcDisabled(reason: String) {
         } else {
             commonHeaders - "route"
         }
+        val securityAgreementHeader = if (carrierSettings.ipsecSupported) {
+            "Require: sec-agree"
+        } else {
+            ""
+        }
         val msg =
             SipRequest(
                 SipMethod.PRACK,
@@ -4410,7 +4501,7 @@ fun onWfcDisabled(reason: String) {
                 headersParam = headers + """
                     RAck: $whatToPrack
                     CSeq: $cseq PRACK
-                    Require: sec-agree
+                    $securityAgreementHeader
                     To: ${resp.headers["to"]!![0]}
                     From: ${resp.headers["from"]!![0]}
                     Call-Id: $callId
@@ -4939,8 +5030,11 @@ fun onWfcDisabled(reason: String) {
             rtpSocket = rtpSocket,
             localHost = "${socket.gLocalAddr().hostAddress}",
             ipType = if (localAddr is Inet6Address) "IP6" else "IP4",
-            amrWbMediaCodecAvailable = amrWbMediaCodecAvailable,
+            amrWbMediaCodecAvailable = carrierAmrWbMediaCodecAvailable,
             singtelStockOutgoingCarrier = useSingTelStockOutgoingPolicy(),
+            preconditionEnabled = carrierSettings.preconditionEnabled(
+                imsRegistrationTech,
+            ),
         )
     }
 
@@ -4978,6 +5072,10 @@ fun onWfcDisabled(reason: String) {
             generatedCallIdHeaders = generateCallId(),
             singtelStockOutgoingCarrier = useSingTelStockOutgoingPolicy(),
             singtelPublicSipUri = { number -> carrierSettings.singtelPublicSipUri(number) },
+            preconditionEnabled = carrierSettings.preconditionEnabled(
+                imsRegistrationTech,
+            ),
+            supportSecurityAgreement = carrierSettings.ipsecSupported,
         )
     }
 
@@ -5486,7 +5584,7 @@ fun onWfcDisabled(reason: String) {
             rtpSocket = rtpSocket,
             amrNbTrack = amrNbTrack,
             dtmfNbTrack = dtmfNbTrack,
-            amrWbMediaCodecAvailable = amrWbMediaCodecAvailable,
+            amrWbMediaCodecAvailable = carrierAmrWbMediaCodecAvailable,
         )
 
 
@@ -6018,6 +6116,7 @@ fun onWfcDisabled(reason: String) {
             outgoingInviteBody = outgoingInviteBody,
         )
         val msg = outgoingInviteRequestContext.request
+        Rlog.i(TAG, "Outgoing INVITE shape: ${SipCarrierDiagnostics.requestShape(msg)}")
         val singtelStockOutgoingTargetUri = outgoingInviteRequestContext.targetUri
         val normalizedPhoneNumber = outgoingInviteRequestContext.normalizedPhoneNumber
 
@@ -6052,6 +6151,14 @@ fun onWfcDisabled(reason: String) {
             outgoingCallSetupFailureReported.set(false)
             outgoingCallSetupInProgress.set(true)
             clearPendingOutgoingInvite(closeRtpSocket = true, reason = "new outgoing call")
+
+            if (!effectiveVoiceEnabled()) {
+                failOutgoingCallSetup(
+                    statusString = "Carrier profile disables IMS voice on this access",
+                    logReason = "outgoing call blocked by effective carrier service policy",
+                )
+                return@thread
+            }
 
             var rtpSocket: DatagramSocket? = null
             try {
@@ -7883,7 +7990,7 @@ fun onWfcDisabled(reason: String) {
             incomingCallId = incomingCallId,
             logTag = TAG,
             hasIncomingResponseWriter = dispatcher.hasWriterForCallId(incomingCallId),
-            amrWbMediaCodecAvailable = amrWbMediaCodecAvailable,
+            amrWbMediaCodecAvailable = carrierAmrWbMediaCodecAvailable,
             extractCallerNumberFromHeader = { header ->
                 normalizeIncomingCallerNumberForFramework(
                     extractCallerNumberFromHeader(header),
@@ -8285,10 +8392,11 @@ fun onWfcDisabled(reason: String) {
             incomingResponseWriter = incomingResponseWriter,
         )?.let { return it }
 
-        if (!mmtelVoiceEnabled) {
+        if (!effectiveVoiceEnabled()) {
             Rlog.w(
                 TAG,
-                "Rejecting initial incoming INVITE because MMTEL voice is disabled " +
+                "Rejecting initial incoming INVITE because effective MMTEL voice " +
+                    "policy is disabled " +
                     "callId=$incomingCallId",
             )
             return 480
@@ -8361,6 +8469,11 @@ fun onWfcDisabled(reason: String) {
         successCb: (() -> Unit),
         failCb: (() -> Unit),
     ) {
+        if (!effectiveSmsIpEnabled()) {
+            Rlog.w(TAG, "Effective carrier policy disables SMS over IMS")
+            failCb()
+            return
+        }
         if (smsFallbackPolicy.shouldBypass(realm)) {
             Rlog.w(TAG, "IMS SMS learned fallback: returning framework fallback without SIP MESSAGE")
             failCb()

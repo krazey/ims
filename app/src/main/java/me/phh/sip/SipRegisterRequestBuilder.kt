@@ -123,8 +123,13 @@ object SipRegisterRequestBuilder {
         forceSecurityAgreementNullEalg: Boolean = false,
         stripSecurityVerifyQ: Boolean = false,
         supportGruu: Boolean = true,
+        supportSecurityAgreement: Boolean = true,
+        registrationExpiresSeconds: Int = 7200,
     ): SipRequest {
-        val defaultSecClientLine = if (registerCounter == 1 || akaDigest.isNotBlank()) {
+        val defaultSecClientLine = if (
+            supportSecurityAgreement &&
+            (registerCounter == 1 || akaDigest.isNotBlank())
+        ) {
             SipSecurityClientHeader.build(
                 ipsecSettings = ipsecSettings,
                 clientPort = clientPort,
@@ -145,9 +150,19 @@ object SipRegisterRequestBuilder {
             effectiveSecClientLine
         }
         val supported = if (supportGruu) {
-            "path, gruu, sec-agree"
+            listOf("path", "gruu", "sec-agree")
         } else {
-            "path, sec-agree"
+            listOf("path", "sec-agree")
+        }.filterNot { it == "sec-agree" && !supportSecurityAgreement }
+            .joinToString(", ")
+        val securityAgreementHeaders = if (supportSecurityAgreement) {
+            """
+                Require: sec-agree
+                Proxy-Require: sec-agree
+                $secClientLine
+            """.trimIndent()
+        } else {
+            ""
         }
         // P-Access-Network-Info: 3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=216302ee2003a107
         return SipRequest(
@@ -156,15 +171,13 @@ object SipRegisterRequestBuilder {
             // "sip:lte-lguplus.co.kr",
             effectiveRegisterHeaders +
                 """
-                Expires: 7200
+                Expires: $registrationExpiresSeconds
                 Cseq: $registerCounter REGISTER
                 Contact: $contact
                 Supported: $supported
                 Allow: INVITE, ACK, CANCEL, BYE, UPDATE, REFER, NOTIFY, MESSAGE, PRACK, OPTIONS
                 $authLine
-                Require: sec-agree
-                Proxy-Require: sec-agree
-                $secClientLine
+                $securityAgreementHeaders
                 """.toSipHeadersMap(),
         ) // route present on all calls except this
     }

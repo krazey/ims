@@ -166,7 +166,8 @@ internal object SipOutgoingInviteProgressResponses {
     ): String =
         "Outgoing dialog request failed: " +
             "status=${response.statusCode} ${response.statusString} " +
-            "cseq=$failedCseq callId=$failedCallId"
+            "cseq=$failedCseq callId=$failedCallId " +
+            "diagnosticHeaders=${SipCarrierDiagnostics.responseHeaders(response)}"
 
     fun outgoingDialogFailureCleanupReason(): String =
         "outgoing dialog failure"

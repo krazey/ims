@@ -57,18 +57,35 @@ internal object ImsNetworkState {
         }
     }
 
-    fun getPcscfServers(lp: LinkProperties): List<InetAddress> {
-        return (lp.javaClass.getMethod("getPcscfServers").invoke(lp) as List<*>)
+    fun getPcscfServers(
+        lp: LinkProperties,
+        ipVersionPolicy: SipIpVersionPolicy = SipIpVersionPolicy.ANY,
+    ): List<InetAddress> {
+        val addresses = (lp.javaClass.getMethod("getPcscfServers").invoke(lp) as List<*>)
             .filterIsInstance<InetAddress>()
             .sortedBy { if (it is Inet6Address) 0 else 1 }
+        val matching = addresses.filter(ipVersionPolicy::accepts)
+        return matching.ifEmpty { addresses }
     }
 
-    fun getImsLocalAddress(lp: LinkProperties): InetAddress? {
-        return lp.linkAddresses
+    fun getImsLocalAddress(
+        lp: LinkProperties,
+        ipVersionPolicy: SipIpVersionPolicy = SipIpVersionPolicy.ANY,
+        peerAddress: InetAddress? = null,
+    ): InetAddress? {
+        val addresses = lp.linkAddresses
             .map { it.address }
             .filter { !it.isAnyLocalAddress && !it.isLoopbackAddress }
             .sortedBy { if (it is Inet6Address) 0 else 1 }
-            .firstOrNull()
+        val sameFamily = peerAddress?.let { peer ->
+            addresses.filter { candidate ->
+                (candidate is Inet6Address) == (peer is Inet6Address)
+            }
+        }.orEmpty()
+        return sameFamily.firstOrNull(ipVersionPolicy::accepts)
+            ?: addresses.firstOrNull(ipVersionPolicy::accepts)
+            ?: sameFamily.firstOrNull()
+            ?: addresses.firstOrNull()
     }
 
     fun resolveEndpoint(
@@ -77,8 +94,9 @@ internal object ImsNetworkState {
         mnc: String,
         mcc: String,
         preferredPcscf: InetAddress? = null,
+        ipVersionPolicy: SipIpVersionPolicy = SipIpVersionPolicy.ANY,
     ): ImsNetworkEndpointResolution {
-        val pcscfs = getPcscfServers(lp)
+        val pcscfs = getPcscfServers(lp, ipVersionPolicy)
         val pcscf = preferredPcscf ?: if (pcscfs.isNotEmpty()) {
             pcscfs[0]
         } else {
@@ -86,11 +104,15 @@ internal object ImsNetworkState {
             // 3GPP DNS discovery (TS 23.003 §13.2): resolve the well-known
             // IMS domain for this PLMN.
             val dnsFallback = try {
-                InetAddress.getByName("ims.mnc${mnc}.mcc${mcc}.pub.3gppnetwork.org")
+                InetAddress.getAllByName(
+                    "ims.mnc${mnc}.mcc${mcc}.pub.3gppnetwork.org",
+                ).firstOrNull(ipVersionPolicy::accepts)
             } catch (t: Throwable) {
                 null
             } ?: try {
-                InetAddress.getByName("ims.mnc${mnc}.mcc${mcc}.3gppnetwork.org")
+                InetAddress.getAllByName(
+                    "ims.mnc${mnc}.mcc${mcc}.3gppnetwork.org",
+                ).firstOrNull(ipVersionPolicy::accepts)
             } catch (t: Throwable) {
                 null
             } ?: android.os.SystemProperties
@@ -113,7 +135,7 @@ internal object ImsNetworkState {
             }
         }
 
-        val localAddr = getImsLocalAddress(lp)
+        val localAddr = getImsLocalAddress(lp, ipVersionPolicy, pcscf)
         if (localAddr == null) {
             Rlog.w(tag, "No usable local address on IMS link properties")
             return ImsNetworkEndpointResolution.NoLocalAddress

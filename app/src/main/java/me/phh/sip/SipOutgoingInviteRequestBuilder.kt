@@ -76,6 +76,8 @@ internal object SipOutgoingInviteRequestBuilder {
         generatedCallIdHeaders: Map<String, List<String>>,
         singtelStockOutgoingCarrier: Boolean,
         singtelPublicSipUri: (String) -> String,
+        preconditionEnabled: Boolean = true,
+        supportSecurityAgreement: Boolean = true,
     ): OutgoingInviteRequestContext {
         val baseRequestContext = buildBaseRequestContext(
             logTag = logTag,
@@ -93,6 +95,8 @@ internal object SipOutgoingInviteRequestBuilder {
             sessionExpiresSeconds = sessionExpiresSeconds,
             minSeSeconds = minSeSeconds,
             generatedCallIdHeaders = generatedCallIdHeaders,
+            preconditionEnabled = preconditionEnabled,
+            supportSecurityAgreement = supportSecurityAgreement,
         )
         val carrierRequestShape = buildCarrierRequestShape(
             normalizedPhoneNumber = baseRequestContext.normalizedPhoneNumber,
@@ -108,6 +112,7 @@ internal object SipOutgoingInviteRequestBuilder {
             commonHeaders = commonHeaders,
             singtelStockOutgoingCarrier = singtelStockOutgoingCarrier,
             singtelPublicSipUri = singtelPublicSipUri,
+            supportSecurityAgreement = supportSecurityAgreement,
         )
         return buildRequestContext(
             outgoingInviteBody = outgoingInviteBody,
@@ -132,6 +137,8 @@ internal object SipOutgoingInviteRequestBuilder {
         sessionExpiresSeconds: Int,
         minSeSeconds: Int,
         generatedCallIdHeaders: Map<String, List<String>>,
+        preconditionEnabled: Boolean,
+        supportSecurityAgreement: Boolean,
     ): OutgoingInviteBaseRequestContext {
         val to = shortServiceTelUri(
             normalizedPhoneNumber = normalizedPhoneNumber,
@@ -152,10 +159,28 @@ internal object SipOutgoingInviteRequestBuilder {
                 "shortCode=${carrierSettings.isLocalShortCode(normalizedPhoneNumber)}",
         )
         val sipInstance = "<urn:gsma:imei:${imei.substring(0, 8)}-${imei.substring(8, 14)}-0>"
-        val contactTel =
-            """<sip:$myTel@$localEndpoint;transport=$transport>;expires=7200;+sip.instance="$sipInstance";+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel";+g.3gpp.smsip;audio"""
+        val contactTel = SipContactHeaders.mmtelContact(
+            userPart = myTel,
+            localEndpoint = localEndpoint,
+            transport = transport,
+            sipInstance = sipInstance,
+            smsIpEnabled = carrierSettings.smsIpEnabled(registrationTech),
+        )
         val carrierPaniHeaders = carrierSettings.outgoingPaniHeaders(registrationTech)
 
+        val supported = if (preconditionEnabled) {
+            "100rel, replaces, timer, precondition"
+        } else {
+            "100rel, replaces, timer"
+        }
+        val securityAgreementHeaders = if (supportSecurityAgreement) {
+            """
+                Require: sec-agree
+                Proxy-Require: sec-agree
+            """.trimIndent()
+        } else {
+            ""
+        }
         val myHeaders = commonHeaders +
             """
                 From: <$mySip>
@@ -163,13 +188,12 @@ internal object SipOutgoingInviteRequestBuilder {
                 P-Preferred-Identity: <$mySip>
                 P-Asserted-Identity: <$mySip>
                 Expires: 7200
-                Require: sec-agree
-                Proxy-Require: sec-agree
+                $securityAgreementHeaders
                 Allow: INVITE, ACK, CANCEL, BYE, UPDATE, REFER, NOTIFY, MESSAGE, PRACK, OPTIONS
                 P-Early-Media: supported
                 Content-Type: application/sdp
                 Session-Expires: ${SipSessionTimerNegotiation.outgoingRequestValue(sessionExpiresSeconds)}
-                Supported: 100rel, replaces, timer, precondition
+                Supported: $supported
                 Accept: application/sdp
                 Min-SE: $minSeSeconds
                 Accept-Contact: *;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
@@ -204,6 +228,7 @@ internal object SipOutgoingInviteRequestBuilder {
         commonHeaders: Map<String, List<String>>,
         singtelStockOutgoingCarrier: Boolean,
         singtelPublicSipUri: (String) -> String,
+        supportSecurityAgreement: Boolean,
     ): OutgoingInviteCarrierRequestShape {
         val databaseOutgoingTargetUri = carrierSettings.outgoingTargetUri(telUri, realm)
         val singtelStockOutgoingTargetUri = if (singtelStockOutgoingCarrier) {
@@ -248,17 +273,24 @@ internal object SipOutgoingInviteRequestBuilder {
              * optional identity/access/capability headers make the first
              * protected INVITE large enough to be dropped by this IMS path.
              */
+            val securityAgreementHeaders = if (supportSecurityAgreement) {
+                """
+                    Require: sec-agree
+                    Proxy-Require: sec-agree
+                    Supported: sec-agree
+                """.trimIndent()
+            } else {
+                ""
+            }
             singtelStockBaseHeaders + """
                 From: <$singtelStockIdentity>;tag=$singtelStockFromTag
                 To: <$singtelStockOutgoingTargetUri>
                 Contact: $singtelCompactContact
                 P-Preferred-Identity: <$singtelStockIdentity>
                 Expires: 7200
-                Require: sec-agree
-                Proxy-Require: sec-agree
+                $securityAgreementHeaders
                 Content-Type: application/sdp
                 Allow: INVITE, ACK, CANCEL, BYE, OPTIONS
-                Supported: sec-agree
                 Request-Disposition: no-fork
                 P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel
                 CSeq: 1 INVITE

@@ -9,6 +9,7 @@ object SipRegEventSubscribeBuilder {
         socket: SipConnection,
         serverPort: Int,
         imei: String,
+        supportSecurityAgreement: Boolean = true,
     ): SipRequest {
         val contactTel = SipContactHeaders.mmtelContact(
             userPart = myTel,
@@ -16,6 +17,16 @@ object SipRegEventSubscribeBuilder {
             transport = SipContactHeaders.transport(socket),
             sipInstance = SipContactHeaders.sipInstanceFromImei(imei),
         )
+
+        val securityHeaders = if (supportSecurityAgreement) {
+            """
+                Supported: sec-agree
+                Require: sec-agree
+                Proxy-Require: sec-agree
+            """.trimIndent()
+        } else {
+            "Supported: path"
+        }
 
         return SipRequest(
             SipMethod.SUBSCRIBE,
@@ -26,9 +37,7 @@ object SipRegEventSubscribeBuilder {
                 P-Preferred-Identity: <$mySip>
                 Event: reg
                 Expires: 7200
-                Supported: sec-agree
-                Require: sec-agree
-                Proxy-Require: sec-agree
+                $securityHeaders
                 Allow: INVITE, ACK, CANCEL, BYE, UPDATE, REFER, NOTIFY, INFO, MESSAGE, PRACK, OPTIONS
                 Accept: application/reginfo+xml
                 P-Access-Network-Info: 3GPP-E-UTRAN-FDD;utran-cell-id-3gpp=20810b8c49752501

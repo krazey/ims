@@ -28,6 +28,7 @@ internal object SipOutgoingInviteSdp {
         ipType: String,
         amrWbMediaCodecAvailable: Boolean,
         singtelStockOutgoingCarrier: Boolean,
+        preconditionEnabled: Boolean = true,
     ): OutgoingInviteSdpOffer {
         val mediaOffer = buildMediaOffer(
             logTag = logTag,
@@ -39,6 +40,7 @@ internal object SipOutgoingInviteSdp {
             ipType = ipType,
             localHost = localHost,
             singtelStockOutgoingCarrier = singtelStockOutgoingCarrier,
+            preconditionEnabled = preconditionEnabled,
         )
         val singtelCompactSdp = buildSingTelCompactBody(
             rtpSocket = rtpSocket,
@@ -102,6 +104,7 @@ internal object SipOutgoingInviteSdp {
         ipType: String,
         localHost: String,
         singtelStockOutgoingCarrier: Boolean,
+        preconditionEnabled: Boolean,
     ): ByteArray {
         val amrNbTrack = mediaOffer.amrNbTrack
         val amrWbTrack = mediaOffer.amrWbTrack
@@ -140,12 +143,16 @@ internal object SipOutgoingInviteSdp {
             "a=fmtp:$amrNbTrack mode-change-capability=2;octet-align=0;max-red=0",
             "a=rtpmap:$dtmfNbTrack telephone-event/8000",
             "a=fmtp:$dtmfNbTrack 0-15",
-            "a=curr:qos local none",
-            "a=curr:qos remote none",
-            "a=des:qos optional local sendrecv",
-            "a=des:qos optional remote sendrecv",
-            "a=sendrecv",
         )
+        if (preconditionEnabled) {
+            sdpLines += listOf(
+                "a=curr:qos local none",
+                "a=curr:qos remote none",
+                "a=des:qos mandatory local sendrecv",
+                "a=des:qos optional remote sendrecv",
+            )
+        }
+        sdpLines += "a=sendrecv"
 
         val finalOutgoingSdpLines = if (singtelStockOutgoingCarrier) {
             sdpLines.map { line -> normalizeSingTelStockOutgoingSdpLine(line) }

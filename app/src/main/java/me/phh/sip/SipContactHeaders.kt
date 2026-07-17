@@ -28,8 +28,15 @@ object SipContactHeaders {
         localEndpoint: String,
         transport: String,
         sipInstance: String,
-    ): String =
-        """<sip:$userPart@$localEndpoint;transport=$transport>;expires=7200;+sip.instance="$sipInstance";$MMTEL_CONTACT_FEATURES"""
+        smsIpEnabled: Boolean = true,
+    ): String {
+        val features = if (smsIpEnabled) {
+            MMTEL_CONTACT_FEATURES
+        } else {
+            "+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel\";audio"
+        }
+        return """<sip:$userPart@$localEndpoint;transport=$transport>;expires=7200;+sip.instance="$sipInstance";$features"""
+    }
 
     fun registrationContact(
         userPart: String,
@@ -37,13 +44,18 @@ object SipContactHeaders {
         transport: String,
         sipInstance: String,
         voiceEnabled: Boolean,
+        smsIpEnabled: Boolean = true,
+        expiresSeconds: Int = 7200,
     ): String {
-        val serviceFeatures = if (voiceEnabled) {
-            MMTEL_CONTACT_FEATURES
-        } else {
-            SMS_ONLY_CONTACT_FEATURES
+        val serviceFeatures = when {
+            voiceEnabled && smsIpEnabled -> MMTEL_CONTACT_FEATURES
+            voiceEnabled ->
+                "+g.3gpp.icsi-ref=\"urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel\";audio"
+            smsIpEnabled -> SMS_ONLY_CONTACT_FEATURES
+            else -> ""
         }
-        return """<sip:$userPart@$localEndpoint;transport=$transport>;expires=7200;+sip.instance="$sipInstance";$serviceFeatures"""
+        return """<sip:$userPart@$localEndpoint;transport=$transport>;expires=$expiresSeconds;+sip.instance="$sipInstance";$serviceFeatures"""
+            .trimEnd(';')
     }
 
     fun viaHeaders(socket: SipConnection, localEndpoint: String): SipHeadersMap {

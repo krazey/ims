@@ -23,6 +23,7 @@ internal class SipSmsHandler(
     private val smsSipFailureListener: (String, Int) -> Unit = { _, _ -> },
     private val sipWriteFailureListener: (String) -> Unit,
     private val timeoutScheduler: (Long, () -> Unit) -> Unit,
+    private val registrationTechProvider: () -> Int,
 ) {
     var onSmsReceived: ((Int, String, ByteArray) -> Unit)? = null
     var onSmsStatusReportReceived: ((Int, String, ByteArray) -> Unit)? = null
@@ -291,6 +292,11 @@ internal class SipSmsHandler(
         successCb: (() -> Unit),
         failCb: (() -> Unit),
     ) {
+        if (!carrierSettings.smsIpEnabled(registrationTechProvider())) {
+            Rlog.w(tag, "Carrier profile disables SMS over IMS on this access")
+            failCb()
+            return
+        }
         val smsManager = ctxt.getSystemService(SmsManager::class.java).createForSubscriptionId(subId)
         val smscIdentity = try {
             val i = smsManager
@@ -412,6 +418,15 @@ internal class SipSmsHandler(
             Rlog.d(tag, "Using carrier-configured IMS SMS request and To URI shape")
         }
 
+        val securityHeaders = if (carrierSettings.ipsecSupported) {
+            """
+                Supported: sec-agree, path
+                Require: sec-agree
+                Proxy-Require: sec-agree
+            """.trimIndent()
+        } else {
+            "Supported: path"
+        }
         val msg = SipRequest(
             SipMethod.MESSAGE,
             requestUri,
@@ -422,9 +437,7 @@ internal class SipSmsHandler(
                 P-Asserted-Identity: <$mySip>
                 Expires: 7200
                 Content-Type: application/vnd.3gpp.sms
-                Supported: sec-agree, path
-                Require: sec-agree
-                Proxy-Require: sec-agree
+                $securityHeaders
                 Allow: MESSAGE
                 Accept-Contact: *;+g.3gpp.smsip;require;explicit
                 Request-Disposition: no-fork
@@ -475,6 +488,15 @@ internal class SipSmsHandler(
             return
         }
 
+        val securityHeaders = if (carrierSettings.ipsecSupported) {
+            """
+                Proxy-Require: sec-agree
+                Require: sec-agree
+                Supported: path, gruu, sec-agree
+            """.trimIndent()
+        } else {
+            "Supported: path"
+        }
         val msg = SipRequest(
             SipMethod.MESSAGE,
             headers.dest,
@@ -482,10 +504,8 @@ internal class SipSmsHandler(
                 Cseq: ${headers.cseq}
                 In-Reply-To: ${headers.callId}
                 Content-Type: application/vnd.3gpp.sms
-                Proxy-Require: sec-agree
-                Require: sec-agree
+                $securityHeaders
                 Allow: MESSAGE
-                Supported: path, gruu, sec-agree
                 Request-Disposition: no-fork
                 Accept-Contact: *;+g.3gpp.smsip
             """.toSipHeadersMap(),
