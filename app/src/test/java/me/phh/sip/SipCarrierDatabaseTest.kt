@@ -139,6 +139,42 @@ class SipCarrierDatabaseTest {
     }
 
     @Test
+    fun `firmware sentinels retain safe runtime defaults`() {
+        val base = SipCarrierPolicy.defaultFor("001", "001")
+        val profile = voiceProfile().copy(
+            registrationRetryBaseSeconds = 0,
+            registrationRetryMaxSeconds = -1,
+            registrationPcscfPolicyOn403 = "perm_stop",
+            minSeSeconds = 0,
+            sessionExpiresSeconds = 0,
+            inviteTimeoutSeconds = 0,
+            ringingTimerSeconds = -1,
+            ringbackTimerSeconds = -1,
+            keepAliveIntervalMs = 0,
+        )
+        val resolved = SipCarrierDatabaseRecord(
+            mapping = SipCarrierDatabaseMapping("00101", "001001", "Test_MNO"),
+            profiles = listOf(profile),
+            serviceSwitches = emptyMap(),
+            csfbStatusRules = emptySet(),
+            voiceCsfbStatusRules = emptySet(),
+            emergencyDomain = null,
+        ).applyTo(base)
+
+        require(resolved.minSeSeconds == base.minSeSeconds)
+        require(resolved.sessionExpiresSeconds == base.sessionExpiresSeconds)
+        require(
+            resolved.registrationRecoveryPolicy ==
+                base.registrationRecoveryPolicy,
+        )
+        require(resolved.callSetupTimerPolicy == base.callSetupTimerPolicy)
+        require(
+            resolved.callSignalingKeepAlivePolicy.intervalMs ==
+                base.callSignalingKeepAlivePolicy.intervalMs,
+        )
+    }
+
+    @Test
     fun `manual overlay remains authoritative over firmware profile`() {
         val firmware = SipCarrierDatabaseRecord(
             mapping = SipCarrierDatabaseMapping("00101", "001001", "Test_MNO"),

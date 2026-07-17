@@ -14,14 +14,19 @@ The generated database contains:
 
 Records imported from firmware have `verification="firmware_reference"`.
 Supported fields are activated as the base PhhIms policy: called-party URI
-type, SIP control transport, Security-Client algorithms, reg-event
-subscription, REGISTER GRUU support, session timers, call-signaling
-keepalives, registration recovery, call setup timers and normal-call CSFB
-response rules. CSFB rules retain Samsung's status classes and exclusions,
-such as `5xx` or `^(?!407)4xx`. SIP 380/382 Alternative-Service responses
-also preserve emergency registration actions and `urn:service:sos.*`
-routing. Log-verified PhhIms behavior stays in the policy overlay and has
-higher precedence.
+type, Security-Client algorithms, reg-event subscription, REGISTER GRUU
+support, positive session and call setup timers, call-signaling keepalives,
+safe registration recovery and normal-call CSFB response rules. CSFB rules
+retain Samsung's status classes and exclusions, such as `5xx` or
+`^(?!407)4xx`. SIP 380/382 Alternative-Service responses also preserve
+emergency registration actions and `urn:service:sos.*` routing. Log-verified
+PhhIms behavior stays in the policy overlay and has higher precedence.
+
+Transport preferences and precondition flags remain reference metadata.
+PhhIms does not treat Samsung's `udp-preferred` value as forced UDP, and it
+does not import permanent registration stops without Samsung's surrounding
+recovery lifecycle. Non-positive timer values are treated as stock sentinels
+and retain the safe PhhIms default.
 
 Samsung-only media, UT and RCS settings remain available as reference data
 until PhhIms has an equivalent typed control point. Importing a field never

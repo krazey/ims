@@ -105,36 +105,38 @@ data class SipCarrierDatabaseRecord(
             securityClientEalgs = supportedEncryptionAlgorithms.ifEmpty {
                 base.securityClientEalgs
             },
-            minSeSeconds = profile.minSeSeconds ?: base.minSeSeconds,
-            sessionExpiresSeconds = profile.sessionExpiresSeconds
-                ?: base.sessionExpiresSeconds,
+            minSeSeconds = profile.minSeSeconds.positiveOr(base.minSeSeconds),
+            sessionExpiresSeconds = profile.sessionExpiresSeconds.positiveOr(
+                base.sessionExpiresSeconds,
+            ),
             registrationRecoveryPolicy = base.registrationRecoveryPolicy.copy(
                 retryBaseMs = profile.registrationRetryBaseSeconds
-                    ?.coerceAtLeast(1)?.times(1_000L)
+                    .positiveSecondsToMs()
                     ?: base.registrationRecoveryPolicy.retryBaseMs,
                 retryMaxMs = profile.registrationRetryMaxSeconds
-                    ?.coerceAtLeast(1)?.times(1_000L)
+                    .positiveSecondsToMs()
                     ?: base.registrationRecoveryPolicy.retryMaxMs,
-                forbiddenPcscfPolicy = RegistrationForbiddenPcscfPolicy.fromSamsung(
+                forbiddenPcscfPolicy = importedForbiddenPcscfPolicy(
                     profile.registrationPcscfPolicyOn403,
                 ) ?: base.registrationRecoveryPolicy.forbiddenPcscfPolicy,
             ),
             callSignalingKeepAlivePolicy = SipCallSignalingKeepAlivePolicy(
                 outgoingMode = profile.keepAliveModeMo,
                 incomingMode = profile.keepAliveModeMt,
-                intervalMs = profile.keepAliveIntervalMs ?: 8_000L,
+                intervalMs = profile.keepAliveIntervalMs?.takeIf { it > 0L }
+                    ?: base.callSignalingKeepAlivePolicy.intervalMs,
                 delayFirstPacket = mapping.canonicalMccMnc.take(3) in
                     setOf("460", "461"),
             ),
             callSetupTimerPolicy = SipCallSetupTimerPolicy(
                 inviteTimeoutMs = profile.inviteTimeoutSeconds
-                    ?.coerceAtLeast(1)?.times(1_000L)
+                    .positiveSecondsToMs()
                     ?: base.callSetupTimerPolicy.inviteTimeoutMs,
                 ringingTimeoutMs = profile.ringingTimerSeconds
-                    ?.coerceAtLeast(1)?.times(1_000L)
+                    .positiveSecondsToMs()
                     ?: base.callSetupTimerPolicy.ringingTimeoutMs,
                 ringbackTimeoutMs = profile.ringbackTimerSeconds
-                    ?.coerceAtLeast(1)?.times(1_000L)
+                    .positiveSecondsToMs()
                     ?: base.callSetupTimerPolicy.ringbackTimeoutMs,
             ),
             inviteFailurePolicy = base.inviteFailurePolicy.copy(
@@ -145,6 +147,19 @@ data class SipCarrierDatabaseRecord(
             ),
         )
     }
+
+    private fun Int?.positiveOr(default: Int): Int =
+        this?.takeIf { it > 0 } ?: default
+
+    private fun Int?.positiveSecondsToMs(): Long? =
+        this?.takeIf { it > 0 }?.times(1_000L)
+
+    private fun importedForbiddenPcscfPolicy(
+        raw: String?,
+    ): RegistrationForbiddenPcscfPolicy? =
+        RegistrationForbiddenPcscfPolicy.fromSamsung(raw)?.takeUnless {
+            it == RegistrationForbiddenPcscfPolicy.PERMANENT_STOP
+        }
 
 }
 
