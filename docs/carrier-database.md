@@ -13,24 +13,23 @@ The generated database contains:
 - carrier-specific CSFB and emergency-domain settings.
 
 Records imported from firmware have `verification="firmware_reference"`.
-Supported fields are activated as the base PhhIms policy: called-party URI
-type, Security-Client algorithms, reg-event subscription, REGISTER GRUU
-support, positive session and call setup timers, call-signaling keepalives,
-safe registration recovery and normal-call CSFB response rules. CSFB rules
-retain Samsung's status classes and exclusions, such as `5xx` or
-`^(?!407)4xx`. SIP 380/382 Alternative-Service responses also preserve
-emergency registration actions and `urn:service:sos.*` routing. Log-verified
-PhhIms behavior stays in the policy overlay and has higher precedence.
+The voice/SMS runtime adapter covers address family, explicit SIP transport,
+IPsec, cellular and IWLAN preconditions, roaming, network/service eligibility,
+service switches, called-party URI type, Security-Client algorithms,
+reg-event subscription, REGISTER expiry and GRUU, session and call timers,
+call-signalling keepalives, codec filtering, registration recovery, SMS
+fallback and normal-call CSFB rules. CSFB rules retain Samsung's status
+classes and exclusions, such as `5xx` or `^(?!407)4xx`.
 
-Transport preferences and precondition flags remain reference metadata.
-PhhIms does not treat Samsung's `udp-preferred` value as forced UDP, and it
-does not import permanent registration stops without Samsung's surrounding
-recovery lifecycle. Non-positive timer values are treated as stock sentinels
-and retain the safe PhhIms default.
+Samsung's `udp-preferred` is deliberately distinct from explicit `udp`; the
+former does not force every carrier onto UDP. Non-positive timer values remain
+stock sentinels and retain the safe PhhIms default. Manual, log-verified policy
+overlays are applied after imported firmware data and remain authoritative.
 
-Samsung-only media, UT and RCS settings remain available as reference data
-until PhhIms has an equivalent typed control point. Importing a field never
-adds reflection or carrier-named executable branches.
+Fields that require unsupported subsystems—EVS, PIDF geolocation, modem SRVCC,
+emergency IMS, UT, RCS, ISIM/OMADM P-CSCF discovery and TLS—are parsed and
+reported rather than silently discarded or falsely advertised. See
+`carrier-database-runtime.md` for the field-by-field runtime matrix.
 
 ## Regenerating
 

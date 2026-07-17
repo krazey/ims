@@ -52,6 +52,51 @@ class SipCarrierPolicyOverlayTest {
     }
 
     @Test
+    fun `overlay can replace imported Samsung runtime policy`() {
+        val base = SipCarrierPolicy.defaultFor("405", "854").copy(
+            transportPolicy = SipTransportPolicy.UDP_PREFERRED,
+            ipVersionPolicy = SipIpVersionPolicy.IPV4,
+            ipsecSupported = true,
+            preconditionPolicy = SipPreconditionPolicy(cellular = false),
+            supportedNetworks = setOf("lte"),
+            supportedServices = setOf("mmtel"),
+            serviceSwitches = mapOf("enableServiceSmsip" to false),
+        )
+        val resolved = SipCarrierPolicyOverlay(
+            booleans = mapOf(
+                "control_socket_udp" to false,
+                "ipsec_supported" to false,
+                "precondition_cellular" to true,
+                "enable_service_smsip" to true,
+            ),
+            strings = mapOf(
+                "ip_version_policy" to "ipv6",
+            ),
+            stringArrays = mapOf(
+                "supported_networks" to listOf("wifi"),
+                "supported_services" to listOf("mmtel", "smsip"),
+                "audio_codecs" to listOf("AMR", "AMR-WB"),
+            ),
+            longs = mapOf(
+                "registration_expires_seconds" to 600L,
+                "mss_size" to 1300L,
+            ),
+        ).applyTo(base)
+
+        require(resolved.transportPolicy == SipTransportPolicy.TCP)
+        require(!resolved.useUdpControlSocket())
+        require(resolved.ipVersionPolicy == SipIpVersionPolicy.IPV6)
+        require(!resolved.ipsecSupported)
+        require(resolved.preconditionPolicy.cellular)
+        require(resolved.supportedNetworks == setOf("wifi"))
+        require(resolved.supportedServices == setOf("mmtel", "smsip"))
+        require(resolved.serviceSwitches["enableServiceSmsip"] == true)
+        require(resolved.registrationExpiresSeconds == 600)
+        require(resolved.mssSize == 1300)
+        require(resolved.audioCodecs == setOf("AMR", "AMR-WB"))
+    }
+
+    @Test
     fun `Tele2 profile replaces newer firmware call defaults`() {
         val base = SipCarrierPolicy.defaultFor("401", "077").copy(
             registerGruuSupported = true,

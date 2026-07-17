@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 package me.phh.sip
 
+import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN
+import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_LTE
+import java.net.InetAddress
 import org.junit.Test
 
 class SipCarrierDatabaseTest {
@@ -28,6 +31,7 @@ class SipCarrierDatabaseTest {
         registrationRetryBaseSeconds = 12,
         registrationRetryMaxSeconds = 345,
         registrationPcscfPolicyOn403 = "next_pcscf",
+        registrationExpiresSeconds = 3600,
         services = setOf("mmtel", "smsip"),
         networks = setOf("lte", "wifi"),
         minSeSeconds = 120,
@@ -39,7 +43,30 @@ class SipCarrierDatabaseTest {
         keepAliveModeMt = "incoming",
         keepAliveIntervalMs = 2_000L,
         mssSize = 1300,
+        pcscfPreference = 0,
+        sosUrnRequired = true,
+        blockDeregistrationOnSrvcc = true,
+        lastPaniHeader = "Cellular-Network-Info",
+        supportedGeolocationPhase = 1,
+        audioCodecs = listOf("AMR-WB", "AMR", "DTMF"),
+        enableEvsCodec = false,
     )
+
+    @Test
+    fun `Samsung IP and transport values keep distinct semantics`() {
+        val ipv4 = InetAddress.getByName("192.0.2.1")
+        val ipv6 = InetAddress.getByName("2001:db8::1")
+
+        require(SipIpVersionPolicy.fromSamsung("ipv4").accepts(ipv4))
+        require(!SipIpVersionPolicy.fromSamsung("ipv4").accepts(ipv6))
+        require(SipIpVersionPolicy.fromSamsung("ipv6").accepts(ipv6))
+        require(SipTransportPolicy.fromSamsung("udp") == SipTransportPolicy.UDP)
+        require(
+            SipTransportPolicy.fromSamsung("udp-preferred") ==
+                SipTransportPolicy.UDP_PREFERRED,
+        )
+        require(!SipTransportPolicy.UDP_PREFERRED.requiresUdp)
+    }
 
     @Test
     fun `canonical PLMN keeps two and three digit MNCs distinct`() {
@@ -92,6 +119,37 @@ class SipCarrierDatabaseTest {
     }
 
     @Test
+    fun `SIM group identifiers select the qualified MVNO mapping`() {
+        val generic = SipCarrierDatabaseMapping("310260", "310260", "Generic_US")
+        val gid1Mvno = SipCarrierDatabaseMapping(
+            sourcePlmn = "310260",
+            canonicalMccMnc = "310260",
+            mnoName = "Gid1_MVNO",
+            gid1 = "BA",
+        )
+        val gid2Mvno = SipCarrierDatabaseMapping(
+            sourcePlmn = "310260",
+            canonicalMccMnc = "310260",
+            mnoName = "Gid2_MVNO",
+            gid1 = "BA",
+            gid2 = "10",
+        )
+
+        require(
+            SipCarrierDatabaseSelector.select(
+                listOf(generic, gid1Mvno, gid2Mvno),
+                SipCarrierDatabaseQuery("310260", gid1 = "ba01", gid2 = "10ff"),
+            ) == gid2Mvno,
+        )
+        require(
+            SipCarrierDatabaseSelector.select(
+                listOf(generic, gid1Mvno, gid2Mvno),
+                SipCarrierDatabaseQuery("310260", gid1 = "ba01"),
+            ) == gid1Mvno,
+        )
+    }
+
+    @Test
     fun `firmware profile activates supported runtime policy`() {
         val record = SipCarrierDatabaseRecord(
             mapping = SipCarrierDatabaseMapping("00101", "001001", "Test_MNO"),
@@ -105,6 +163,16 @@ class SipCarrierDatabaseTest {
         val resolved = record.applyTo(SipCarrierPolicy.defaultFor("001", "001"))
 
         require(!resolved.isControlSocketUdp)
+        require(resolved.transportPolicy == SipTransportPolicy.UDP_PREFERRED)
+        require(resolved.ipVersionPolicy == SipIpVersionPolicy.IPV4V6)
+        require(resolved.ipsecSupported)
+        require(resolved.preconditionPolicy.cellular)
+        require(resolved.preconditionPolicy.iwlan)
+        require(resolved.roamingSupported)
+        require(resolved.supportedNetworks == setOf("lte", "wifi"))
+        require(resolved.voiceEnabled(REGISTRATION_TECH_LTE))
+        require(resolved.voiceEnabled(REGISTRATION_TECH_IWLAN))
+        require(resolved.smsIpEnabled(REGISTRATION_TECH_LTE))
         require(!resolved.subscribeRegEvent)
         require(!resolved.registerGruuSupported)
         require(
@@ -115,6 +183,15 @@ class SipCarrierDatabaseTest {
         require(resolved.securityClientEalgs == listOf("null", "aes-cbc"))
         require(resolved.minSeSeconds == 120)
         require(resolved.sessionExpiresSeconds == 2400)
+        require(resolved.registrationExpiresSeconds == 3600)
+        require(resolved.mssSize == 1300)
+        require(resolved.pcscfPreference == 0)
+        require(resolved.sosUrnRequired)
+        require(resolved.blockDeregistrationOnSrvcc)
+        require(resolved.lastPaniHeader == "Cellular-Network-Info")
+        require(resolved.supportedGeolocationPhase == 1)
+        require(resolved.allowsAudioCodec("AMR-WB"))
+        require(!resolved.allowsAudioCodec("EVS"))
         require(resolved.registrationRecoveryPolicy.retryBaseMs == 12_000L)
         require(resolved.registrationRecoveryPolicy.retryMaxMs == 345_000L)
         require(
@@ -151,6 +228,9 @@ class SipCarrierDatabaseTest {
             ringingTimerSeconds = -1,
             ringbackTimerSeconds = -1,
             keepAliveIntervalMs = 0,
+            registrationExpiresSeconds = 0,
+            mssSize = 20,
+            pcscfPreference = 99,
         )
         val resolved = SipCarrierDatabaseRecord(
             mapping = SipCarrierDatabaseMapping("00101", "001001", "Test_MNO"),
@@ -163,6 +243,9 @@ class SipCarrierDatabaseTest {
 
         require(resolved.minSeSeconds == base.minSeSeconds)
         require(resolved.sessionExpiresSeconds == base.sessionExpiresSeconds)
+        require(resolved.registrationExpiresSeconds == base.registrationExpiresSeconds)
+        require(resolved.mssSize == base.mssSize)
+        require(resolved.pcscfPreference == base.pcscfPreference)
         require(
             resolved.registrationRecoveryPolicy ==
                 base.registrationRecoveryPolicy,

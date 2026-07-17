@@ -8,6 +8,36 @@ import xml.etree.ElementTree as ET
 
 DATABASE = Path(__file__).parents[1] / "app/src/main/res/xml/sip_carrier_database.xml"
 
+RUNTIME_PROFILE_ATTRIBUTES = {
+    "name", "mnoname", "representative_plmn", "pdn", "emergency_support",
+    "remote_uri_type", "ipver", "transport", "support_ipsec",
+    "use_precondition", "wifi_precondition_enabled", "support_roaming",
+    "auth_algo", "enc_algo", "subscribe_for_reg", "enable_gruu",
+    "reg_retry_base_time", "reg_retry_max_time",
+    "reg_retry_pcscf_policy_on_403", "reg_expires", "session_expires",
+    "min_se", "invite_timeout", "ringing_timer", "ringback_timer",
+    "keep_alive_mode_mo", "keep_alive_mode_mt", "keep_alive_interval",
+    "mss_size", "pcscf_pref", "sos_urn_required", "block_deregi_on_srvcc",
+    "last_pani_header", "supported_geolocation_phase", "audio_codec",
+    "enable_evs_codec", "networks", "services",
+}
+RUNTIME_MAPPING_ATTRIBUTES = {
+    "plmn", "mccmnc", "mno", "subset", "gid1", "gid2", "spname",
+    "block_gc", "note",
+}
+RUNTIME_SWITCH_ATTRIBUTES = {
+    "mnoname", "enableIms", "enableServiceDatachannel", "enableServiceRcs",
+    "enableServiceRcschat", "enableServiceSmsip", "enableServiceVilte",
+    "enableServiceVolte", "enableServiceVowifi",
+}
+RUNTIME_GLOBAL_ATTRIBUTES = {
+    "mnoname", "all_csfb_error_code_list", "voice_csfb_error_code_list",
+    "e911_csfb_error_code_list", "emergency_domain_setting",
+    "no_sim_emergency_domain_setting", "enable_default_sms_fallback",
+    "srvcc_version", "ss_domain_setting", "ss_cf_uri_type",
+    "iwlan_pani_format",
+}
+
 
 class CarrierDatabaseTest(unittest.TestCase):
     @classmethod
@@ -40,6 +70,21 @@ class CarrierDatabaseTest(unittest.TestCase):
         self.assertEqual(585, len(self.root.find("switches")))
         self.assertEqual(666, len(self.globals))
 
+    def test_every_generated_profile_attribute_has_a_runtime_disposition(self):
+        generated = set().union(*(profile.attrib.keys() for profile in self.profiles))
+        self.assertEqual(RUNTIME_PROFILE_ATTRIBUTES, generated)
+
+    def test_every_other_generated_attribute_has_a_runtime_disposition(self):
+        sections = (
+            ("mappings", RUNTIME_MAPPING_ATTRIBUTES),
+            ("switches", RUNTIME_SWITCH_ATTRIBUTES),
+            ("global-settings", RUNTIME_GLOBAL_ATTRIBUTES),
+        )
+        for section, expected in sections:
+            elements = self.root.find(section)
+            generated = set().union(*(element.attrib.keys() for element in elements))
+            self.assertEqual(expected, generated, section)
+
     def test_two_digit_mncs_are_canonicalized_without_collision(self):
         self.assertEqual("40177", self.mapping("401077", "Tele2_KZ").get("plmn"))
         self.assertEqual("40107", self.mapping("401007", "Altel_KZ").get("plmn"))
@@ -52,6 +97,8 @@ class CarrierDatabaseTest(unittest.TestCase):
         tele2 = self.profile("Tele2_KZ", "Tele2 Kazakhstan IMS")
         self.assertEqual("sip", tele2.get("remote_uri_type"))
         self.assertEqual("90", tele2.get("ringing_timer"))
+        self.assertEqual("true", tele2.get("use_precondition"))
+        self.assertEqual("udp-preferred", tele2.get("transport"))
         self.assertEqual(
             "380,403,500,503,1117",
             self.global_settings("Tele2_KZ").get("all_csfb_error_code_list"),
@@ -60,6 +107,11 @@ class CarrierDatabaseTest(unittest.TestCase):
         singtel = self.profile("Singtel_SG", "Singtel VoLTE")
         self.assertEqual("hmac-md5-96", singtel.get("auth_algo"))
         self.assertEqual("tcp", singtel.get("transport"))
+
+        jio = self.profile("RJIL_IN", "RJIL VoLTE")
+        self.assertEqual("ipv4", jio.get("ipver"))
+        self.assertEqual("tcp", jio.get("transport"))
+        self.assertEqual("false", jio.get("use_precondition"))
 
     def test_singtel_aliases_are_all_present(self):
         for canonical in ("525001", "525002", "525096"):

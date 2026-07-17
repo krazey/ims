@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
 package me.phh.sip
 
+import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_IWLAN
+import android.telephony.ims.stub.ImsRegistrationImplBase.REGISTRATION_TECH_LTE
+import java.net.DatagramSocket
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -35,6 +38,58 @@ class SipCarrierRuntimeIntegrationTest {
         assertTrue(contact.contains("+g.3gpp.smsip"))
         assertTrue(contact.contains("3gpp-service.ims.icsi.mmtel"))
         assertTrue(contact.endsWith(";audio"))
+    }
+
+    @Test
+    fun registrationContactCanOmitEveryUnsupportedService() {
+        val contact = SipContactHeaders.registrationContact(
+            userPart = "user",
+            localEndpoint = "192.0.2.1:5060",
+            transport = "tcp",
+            sipInstance = "<urn:gsma:imei:12345678-123456-0>",
+            voiceEnabled = false,
+            smsIpEnabled = false,
+        )
+
+        assertFalse(contact.contains("mmtel"))
+        assertFalse(contact.contains("smsip"))
+        assertFalse(contact.endsWith(';'))
+    }
+
+    @Test
+    fun carrierPreconditionPolicyDiffersBetweenLteAndIwlan() {
+        val policy = SipPreconditionPolicy(cellular = true, iwlan = false)
+
+        assertTrue(policy.enabledFor(REGISTRATION_TECH_LTE))
+        assertFalse(policy.enabledFor(REGISTRATION_TECH_IWLAN))
+    }
+
+    @Test
+    fun outgoingSdpOnlyAdvertisesConfiguredPreconditions() {
+        DatagramSocket().use { socket ->
+            val enabled = SipOutgoingInviteSdp.build(
+                logTag = "test",
+                rtpSocket = socket,
+                localHost = "192.0.2.1",
+                ipType = "IP4",
+                amrWbMediaCodecAvailable = false,
+                singtelStockOutgoingCarrier = false,
+                preconditionEnabled = true,
+            ).inviteBody.toString(Charsets.US_ASCII)
+            val disabled = SipOutgoingInviteSdp.build(
+                logTag = "test",
+                rtpSocket = socket,
+                localHost = "192.0.2.1",
+                ipType = "IP4",
+                amrWbMediaCodecAvailable = false,
+                singtelStockOutgoingCarrier = false,
+                preconditionEnabled = false,
+            ).inviteBody.toString(Charsets.US_ASCII)
+
+            assertTrue(enabled.contains("a=des:qos mandatory local sendrecv"))
+            assertFalse(disabled.contains("a=curr:qos"))
+            assertFalse(disabled.contains("a=des:qos"))
+        }
     }
 
     @Test
