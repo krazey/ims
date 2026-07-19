@@ -41,6 +41,13 @@
     <carrier mccmnc="401077" name="Tele2 Kazakhstan">
         <boolean name="kazakhstan_mobile_without_country_code" value="true" />
         <boolean name="register_gruu_supported" value="false" />
+        <string
+            name="outgoing_target_domain_policy"
+            value="REGISTRATION_REALM" />
+        <string name="outgoing_pani_policy" value="LTE_CELL_IDENTITY" />
+        <string
+            name="outgoing_visited_network_policy"
+            value="REGISTRATION_REALM" />
         <long name="ringing_timeout_ms" value="120000" />
         <long name="ringback_timeout_ms" value="120000" />
         <string-array name="invite_csfb_status_codes">

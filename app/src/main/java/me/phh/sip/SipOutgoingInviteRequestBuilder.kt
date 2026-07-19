@@ -74,6 +74,7 @@ internal object SipOutgoingInviteRequestBuilder {
         sessionExpiresSeconds: Int,
         minSeSeconds: Int,
         generatedCallIdHeaders: Map<String, List<String>>,
+        accessNetworkHeaders: SipHeadersMap = emptyMap(),
         singtelStockOutgoingCarrier: Boolean,
         singtelPublicSipUri: (String) -> String,
         preconditionEnabled: Boolean = true,
@@ -95,6 +96,7 @@ internal object SipOutgoingInviteRequestBuilder {
             sessionExpiresSeconds = sessionExpiresSeconds,
             minSeSeconds = minSeSeconds,
             generatedCallIdHeaders = generatedCallIdHeaders,
+            accessNetworkHeaders = accessNetworkHeaders,
             preconditionEnabled = preconditionEnabled,
             supportSecurityAgreement = supportSecurityAgreement,
         )
@@ -138,6 +140,7 @@ internal object SipOutgoingInviteRequestBuilder {
         sessionExpiresSeconds: Int,
         minSeSeconds: Int,
         generatedCallIdHeaders: Map<String, List<String>>,
+        accessNetworkHeaders: SipHeadersMap,
         preconditionEnabled: Boolean,
         supportSecurityAgreement: Boolean,
     ): OutgoingInviteBaseRequestContext {
@@ -201,7 +204,7 @@ internal object SipOutgoingInviteRequestBuilder {
                 P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel
                 Contact: $contactTel
                 """.toSipHeadersMap() + carrierPaniHeaders +
-            generatedCallIdHeaders - "p-asserted-identity"
+            generatedCallIdHeaders + accessNetworkHeaders - "p-asserted-identity"
         // P-Preferred-Service: urn:urn-7:3gpp-service.ims.icsi.mmtel
         // Accept-Contact: *;+g.3gpp.icsi-ref="urn%3Aurn-7%3A3gpp-service.ims.icsi.mmtel"
 

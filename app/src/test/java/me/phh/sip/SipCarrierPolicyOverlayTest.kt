@@ -114,6 +114,11 @@ class SipCarrierPolicyOverlayTest {
             booleans = mapOf(
                 "register_gruu_supported" to false,
             ),
+            strings = mapOf(
+                "outgoing_target_domain_policy" to "REGISTRATION_REALM",
+                "outgoing_pani_policy" to "LTE_CELL_IDENTITY",
+                "outgoing_visited_network_policy" to "REGISTRATION_REALM",
+            ),
             longs = mapOf(
                 "ringing_timeout_ms" to 120_000L,
                 "ringback_timeout_ms" to 120_000L,
@@ -126,14 +131,22 @@ class SipCarrierPolicyOverlayTest {
         require(!resolved.registerGruuSupported)
         require(
             resolved.outgoingTargetDomainPolicy ==
-                SipCarrierPolicy.OutgoingTargetDomainPolicy.PRIMARY_ASSOCIATED_URI,
+                SipCarrierPolicy.OutgoingTargetDomainPolicy.REGISTRATION_REALM,
+        )
+        require(
+            resolved.outgoingPaniPolicy ==
+                SipCarrierPolicy.OutgoingPaniPolicy.LTE_CELL_IDENTITY,
+        )
+        require(
+            resolved.outgoingVisitedNetworkPolicy ==
+                SipCarrierPolicy.OutgoingVisitedNetworkPolicy.REGISTRATION_REALM,
         )
         require(
             resolved.outgoingTargetUri(
                 telUri = "tel:+00000000000",
                 realm = "ims.mnc077.mcc401.3gppnetwork.org",
                 registeredSipUri = "sip:+00000000001@ims.altel4g.kz",
-            ) == "sip:+00000000000@ims.altel4g.kz;user=phone",
+            ) == "sip:+00000000000@ims.mnc077.mcc401.3gppnetwork.org;user=phone",
         )
         require(
             resolved.outgoingTargetUri(

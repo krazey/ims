@@ -5070,6 +5070,15 @@ fun onWfcDisabled(reason: String) {
             sessionExpiresSeconds = outgoingInviteSessionTimer.sessionExpiresSeconds,
             minSeSeconds = outgoingInviteSessionTimer.minSeSeconds,
             generatedCallIdHeaders = generateCallId(),
+            accessNetworkHeaders = SipAccessNetworkHeaders.forOutgoingInvite(
+                logTag = TAG,
+                telephonyManager = subTelephonyManager,
+                registrationTech = imsRegistrationTech,
+                policy = carrierSettings.policy.outgoingPaniPolicy,
+                visitedNetworkPolicy =
+                    carrierSettings.policy.outgoingVisitedNetworkPolicy,
+                visitedNetworkId = realm,
+            ),
             singtelStockOutgoingCarrier = useSingTelStockOutgoingPolicy(),
             singtelPublicSipUri = { number -> carrierSettings.singtelPublicSipUri(number) },
             preconditionEnabled = carrierSettings.preconditionEnabled(

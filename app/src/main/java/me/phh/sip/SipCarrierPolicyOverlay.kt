@@ -162,6 +162,11 @@ internal data class SipCarrierPolicyOverlay(
             outgoingPaniPolicy = strings["outgoing_pani_policy"]
                 ?.let { enumValueOrNull<SipCarrierPolicy.OutgoingPaniPolicy>(it) }
                 ?: base.outgoingPaniPolicy,
+            outgoingVisitedNetworkPolicy = strings[
+                "outgoing_visited_network_policy"
+            ]?.let {
+                enumValueOrNull<SipCarrierPolicy.OutgoingVisitedNetworkPolicy>(it)
+            } ?: base.outgoingVisitedNetworkPolicy,
             outgoingInviteShape = strings["outgoing_invite_shape"]
                 ?.let { enumValueOrNull<SipCarrierPolicy.OutgoingInviteShape>(it) }
                 ?: base.outgoingInviteShape,

@@ -258,6 +258,8 @@ data class SipCarrierPolicy(
     val plainTelShortCodes: Set<String> = emptySet(),
     val plainTelAllLocalShortCodes: Boolean = false,
     val outgoingPaniPolicy: OutgoingPaniPolicy = OutgoingPaniPolicy.NONE,
+    val outgoingVisitedNetworkPolicy: OutgoingVisitedNetworkPolicy =
+        OutgoingVisitedNetworkPolicy.NONE,
     val outgoingInviteShape: OutgoingInviteShape = OutgoingInviteShape.DEFAULT,
     val outgoingTargetUriType: OutgoingTargetUriType = OutgoingTargetUriType.TEL,
     val outgoingTargetDomainPolicy: OutgoingTargetDomainPolicy =
@@ -463,6 +465,12 @@ data class SipCarrierPolicy(
     enum class OutgoingPaniPolicy {
         NONE,
         REGISTRATION_ACCESS_TECH,
+        LTE_CELL_IDENTITY,
+    }
+
+    enum class OutgoingVisitedNetworkPolicy {
+        NONE,
+        REGISTRATION_REALM,
     }
 
     enum class OutgoingTargetUriType {
@@ -567,6 +575,8 @@ data class SipCarrierSettings(
             "networks=${policy.supportedNetworks} services=${policy.supportedServices} " +
             "switches=${policy.serviceSwitches} uri=${policy.outgoingTargetUriType} " +
             "targetDomain=${policy.outgoingTargetDomainPolicy} " +
+            "pani=${policy.outgoingPaniPolicy} " +
+            "visitedNetwork=${policy.outgoingVisitedNetworkPolicy} " +
             "subscribe=${policy.subscribeRegEvent} gruu=${policy.registerGruuSupported} " +
             "regExpires=${policy.registrationExpiresSeconds} " +
             "sessionExpires=${policy.sessionExpiresSeconds} minSe=${policy.minSeSeconds} " +
