@@ -6,6 +6,7 @@ import android.media.*
 import android.net.*
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.PowerManager
 import android.os.SystemClock
 import android.telephony.Rlog
 import android.telephony.TelephonyManager
@@ -36,6 +37,8 @@ class SipHandler(
         private const val RTP_SOCKET_RECEIVE_TIMEOUT_MS = 20
 
         private const val INCOMING_ACCEPT_IMS_ACCESS_CHANGE_GUARD_MS = 1_200L
+        private const val REGISTER_REFRESH_RETRY_RESPONSE_TIMEOUT_MS = 15_000L
+        private const val REGISTER_REFRESH_RETRY_WAKE_LOCK_GRACE_MS = 1_000L
     }
 
     val myHandler = Handler(HandlerThread("PhhMmTelFeature").apply { start() }.looper)
@@ -227,6 +230,16 @@ class SipHandler(
 
 
     private var registerCounter = 1
+    private val registerRefreshRetryAttempted = AtomicBoolean(false)
+    private val registerRefreshRetryGeneration = AtomicInteger(0)
+    private val registerRefreshRetryWakeLock by lazy {
+        ctxt.getSystemService(PowerManager::class.java).newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "$TAG:RegisterRefreshRetry",
+        ).apply {
+            setReferenceCounted(false)
+        }
+    }
     private var registerHeaders =
         """
         From: <sip:$user>
@@ -251,6 +264,10 @@ class SipHandler(
     lateinit private var socket: SipConnection
     lateinit private var serverSocket: SipConnectionTcpServer
     lateinit private var serverSocketUdp: SipConnectionUdpServer
+    private val mainSipFlowRecoveryLock = Any()
+    private val mainSipFlowAwaitingOnDemandRecovery = AtomicBoolean(false)
+    private val mainSipFlowRecoveredSinceRegistration = AtomicBoolean(false)
+    private val mainSipFlowOpenedElapsedRealtimeMs = AtomicLong(0L)
     private var reliableSequenceCounter = 67
     private val incomingFinalResponseSent = AtomicBoolean(false)
     private val incomingAcceptedAwaitingAck = AtomicBoolean(false)
@@ -532,7 +549,7 @@ private val smsHandler = SipSmsHandler(
         realmProvider = { realm },
         commonHeadersProvider = { commonHeaders },
         mySipProvider = { mySip },
-        writerProvider = { socket.gWriter() },
+        writerProvider = { mainSipWriterForOutbound("IMS SMS") },
         responseCallbackSetter = { callId, cb -> setResponseCallback(callId, cb) },
         responseCallbackRemover = { callId -> removeResponseCallback(callId) },
         smsSipFailureListener = { smsRealm, statusCode -> smsFallbackPolicy.learnFromSipMessageFailure(smsRealm, statusCode) },
@@ -954,6 +971,10 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
     }
 
     private fun resetRegistrationStateForConnect() {
+        registerRefreshRetryAttempted.set(false)
+        registerRefreshRetryGeneration.incrementAndGet()
+        releaseRegisterRefreshRetryWakeLock("registration state reset")
+        mainSipFlowRecoveredSinceRegistration.set(false)
         registerCounter = 1
         akaDigest = initialRegisterAuthorization()
         val registerCallId = generateCallId()
@@ -1105,7 +1126,13 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
     private fun closeSipTransports(reason: String) {
         Rlog.w(TAG, "Closing SIP transports: $reason")
         callSignalingKeepAlive.stop("SIP transports closing: $reason")
-        val newGeneration = sipReaderGeneration.incrementAndGet()
+        val newGeneration = synchronized(mainSipFlowRecoveryLock) {
+            mainSipFlowAwaitingOnDemandRecovery.set(false)
+            mainSipFlowRecoveredSinceRegistration.set(false)
+            mainSipFlowOpenedElapsedRealtimeMs.set(0L)
+            releaseRegisterRefreshRetryWakeLock("SIP transports closing")
+            sipReaderGeneration.incrementAndGet()
+        }
         Rlog.w(TAG, "Invalidated SIP reader generation=$newGeneration while closing transports: $reason")
         BoundedCloser.close(TAG, "plainSocket") { if (this::plainSocket.isInitialized) plainSocket.close() }
         BoundedCloser.close(TAG, "socket") { if (this::socket.isInitialized) socket.close() }
@@ -1501,6 +1528,177 @@ fun onWfcDisabled(reason: String) {
             return false
         }
         return true
+    }
+
+
+    private fun mainSipFlowRecoveryState(
+        recoverableFlowLoss: Boolean,
+    ): MainSipFlowRecoveryState {
+        val networkUsable =
+            imsReady &&
+                this::network.isInitialized &&
+                this::localAddr.isInitialized &&
+                imsTransportGuard.isUsableForOutgoingCall(
+                    localAddr,
+                    "main SIP TCP flow recovery",
+                )
+
+        return MainSipFlowRecoveryState(
+            controlTransportIsTcp = this::socket.isInitialized && socket is SipConnectionTcp,
+            imsReady = imsReady,
+            ipsecResourcesOpen = this::ipsecSettings.isInitialized && !ipsecResourcesClosed,
+            inboundServerListening =
+                this::serverSocket.isInitialized && !serverSocket.serverSocket.isClosed,
+            networkUsable = networkUsable,
+            recoverableFlowLoss = recoverableFlowLoss,
+            reconnecting = reconnectController.isReconnecting(),
+            accessMigrationPending = pendingCellularReconnectAfterWfcDisable,
+            activeOrPendingCall = hasActiveOrPendingCallForImsReconnectDeferral(),
+        )
+    }
+
+
+    private fun preserveRegistrationAfterMainTcpFlowLoss(
+        connection: SipConnectionTcp,
+        readerGeneration: Int,
+    ): Boolean {
+        synchronized(mainSipFlowRecoveryLock) {
+            if (
+                readerGeneration != sipReaderGeneration.get() ||
+                !this::socket.isInitialized ||
+                socket !== connection
+            ) {
+                return false
+            }
+
+            val flowOpenedElapsedRealtimeMs =
+                mainSipFlowOpenedElapsedRealtimeMs.get()
+            val flowAgeMs = if (flowOpenedElapsedRealtimeMs > 0L) {
+                maxOf(
+                    0L,
+                    SystemClock.elapsedRealtime() - flowOpenedElapsedRealtimeMs,
+                )
+            } else {
+                0L
+            }
+            val recoveryState = mainSipFlowRecoveryState(
+                recoverableFlowLoss =
+                    MainSipFlowRecoveryPolicy.isRecoverableFlowAge(flowAgeMs),
+            )
+            if (!MainSipFlowRecoveryPolicy.mayKeepRegistration(recoveryState)) {
+                Rlog.d(
+                    TAG,
+                    "Main TCP flow is not eligible for registration-preserving recovery: " +
+                        "$recoveryState flowAgeMs=$flowAgeMs",
+                )
+                return false
+            }
+
+            val expiredWriter = try {
+                connection.gWriter()
+            } catch (_: Throwable) {
+                null
+            }
+            mainSipFlowAwaitingOnDemandRecovery.set(true)
+            connection.closeTransportForReconnect()
+            expiredWriter?.let { dispatcher.removeWritersFor(it) }
+
+            Rlog.w(
+                TAG,
+                "Protected main SIP TCP flow closed while IMS registration remains valid; " +
+                    "keeping inbound listeners/IPsec and reopening the flow on demand " +
+                    "after flowAgeMs=$flowAgeMs",
+            )
+            return true
+        }
+    }
+
+
+    private fun ensureMainSipFlowForOutbound(reason: String): Boolean {
+        if (!this::socket.isInitialized) return false
+
+        val observedConnection = socket
+        if (observedConnection !is SipConnectionTcp || observedConnection.isConnected()) {
+            return true
+        }
+
+        synchronized(mainSipFlowRecoveryLock) {
+            if (!this::socket.isInitialized) return false
+            val connection = socket
+            if (connection !is SipConnectionTcp || connection.isConnected()) {
+                return true
+            }
+
+            val recoveryState = mainSipFlowRecoveryState(
+                recoverableFlowLoss = mainSipFlowAwaitingOnDemandRecovery.get(),
+            )
+            if (!MainSipFlowRecoveryPolicy.mayKeepRegistration(recoveryState)) {
+                val reconnectReason =
+                    "protected main SIP TCP flow unavailable before $reason"
+                Rlog.w(
+                    TAG,
+                    "Cannot reopen protected main SIP TCP flow in place; " +
+                        "requesting full IMS reconnect: state=$recoveryState reason=$reason",
+                )
+                if (shouldReconnectAfterSipTransportLoss(reconnectReason)) {
+                    reconnectIms(reconnectReason, delayMs = 0L)
+                }
+                return false
+            }
+
+            val readerGeneration = sipReaderGeneration.get()
+            mainSipFlowAwaitingOnDemandRecovery.set(false)
+            try {
+                Rlog.w(
+                    TAG,
+                    "Reopening protected main SIP TCP flow on demand without IMS AKA: $reason",
+                )
+                connection.reconnectPreservingIpsec()
+            } catch (t: Throwable) {
+                val reconnectReason =
+                    "protected main SIP TCP flow recovery failed before $reason"
+                Rlog.w(
+                    TAG,
+                    "$reconnectReason; requesting full IMS reconnect",
+                    t,
+                )
+                if (shouldReconnectAfterSipTransportLoss(reconnectReason)) {
+                    reconnectIms(reconnectReason, delayMs = 0L)
+                }
+                return false
+            }
+
+            if (
+                readerGeneration != sipReaderGeneration.get() ||
+                !imsReady ||
+                !this::socket.isInitialized ||
+                socket !== connection
+            ) {
+                Rlog.w(
+                    TAG,
+                    "Discarding recovered main SIP TCP flow because IMS state changed: $reason",
+                )
+                connection.closeTransportForReconnect()
+                return false
+            }
+
+            mainSipFlowOpenedElapsedRealtimeMs.set(SystemClock.elapsedRealtime())
+            mainSipFlowRecoveredSinceRegistration.set(true)
+            startMainSipReaderLoop(readerGeneration, connection)
+            Rlog.w(
+                TAG,
+                "Protected main SIP TCP flow reopened without IMS re-registration: $reason",
+            )
+            return true
+        }
+    }
+
+
+    private fun mainSipWriterForOutbound(reason: String): OutputStream {
+        if (!ensureMainSipFlowForOutbound(reason)) {
+            throw IOException("Main SIP flow is unavailable for $reason")
+        }
+        return socket.gWriter()
     }
 
 
@@ -2039,6 +2237,9 @@ fun onWfcDisabled(reason: String) {
 
     private fun connectProtectedSipSocketAndRegister(portS: Int) {
         connectSipSocketWithWatchdog(socket, portS, "IPsec authenticated")
+        if (socket is SipConnectionTcp) {
+            mainSipFlowOpenedElapsedRealtimeMs.set(SystemClock.elapsedRealtime())
+        }
         updateCommonHeaders(socket)
         register()
     }
@@ -2487,7 +2688,10 @@ fun onWfcDisabled(reason: String) {
         // - connection to server socket
         // Start both in threads as we're only called here from network callback from which
         // it's better to return.
-        val readerGeneration = sipReaderGeneration.incrementAndGet()
+        val readerGeneration = synchronized(mainSipFlowRecoveryLock) {
+            mainSipFlowAwaitingOnDemandRecovery.set(false)
+            sipReaderGeneration.incrementAndGet()
+        }
         Rlog.d(TAG, "Starting SIP reader loops generation=$readerGeneration")
 
         startMainSipReaderLoop(readerGeneration)
@@ -2509,17 +2713,33 @@ fun onWfcDisabled(reason: String) {
         return true
     }
 
-    private fun startMainSipReaderLoop(readerGeneration: Int) {
+    private fun startMainSipReaderLoop(
+        readerGeneration: Int,
+        mainConnection: SipConnection = socket,
+    ) {
         CoroutineScope(Dispatchers.IO).launch {
+            var cleanStreamEnd = false
             try {
-                while (parseMessage(socket.gReader(), socket.gWriter())) {
+                while (parseMessage(mainConnection.gReader(), mainConnection.gWriter())) {
                 }
-                Rlog.w(TAG, "Main socket got EOF, reconnecting")
+                cleanStreamEnd = true
+                Rlog.w(TAG, "Main socket got EOF")
             } catch (t: Throwable) {
-                Rlog.w(TAG, "Got exception in main/control socket, reconnecting", t)
+                Rlog.w(TAG, "Got exception in main/control socket", t)
             }
 
             if (isStaleSipReaderLoop(readerGeneration, "main/control SIP socket lost")) {
+                return@launch
+            }
+
+            if (
+                cleanStreamEnd &&
+                mainConnection is SipConnectionTcp &&
+                preserveRegistrationAfterMainTcpFlowLoss(
+                    connection = mainConnection,
+                    readerGeneration = readerGeneration,
+                )
+            ) {
                 return@launch
             }
 
@@ -2976,7 +3196,7 @@ fun onWfcDisabled(reason: String) {
         // well that'd only matter if the server refused replays, so keep as is.
         // XXX timeout/retry? notification on fail? receive on thread?
 
-        val writer = _writer ?: socket.gWriter()
+        val writer = _writer ?: mainSipWriterForOutbound("REGISTER")
 
         val msg = SipRegisterRequestBuilder.build(
             realm = registerTargetRealm,
@@ -3007,20 +3227,55 @@ fun onWfcDisabled(reason: String) {
     }
 
     fun registerCallback(response: SipResponse): Boolean {
-        if (SipRegisterRefreshResponsePolicy.action(response.statusCode) ==
-            RegisterRefreshResponseAction.KEEP_REGISTRATION
-        ) {
-            // This callback handles REGISTER refreshes after the initial
-            // registration completed. A carrier may reject a service-tag
-            // update while the existing registration is still valid. Do not
-            // throw from the dispatcher and kill the long-lived SIP reader.
-            Rlog.w(
-                TAG,
-                "Keeping established IMS registration after REGISTER refresh " +
-                    "failed: ${response.statusCode} ${response.statusString}",
+        when (
+            SipRegisterRefreshResponsePolicy.action(
+                statusCode = response.statusCode,
+                sentOnRecoveredFlow =
+                    mainSipFlowRecoveredSinceRegistration.get(),
             )
-            return false
+        ) {
+            RegisterRefreshResponseAction.RECONNECT -> {
+                registerRefreshRetryAttempted.set(false)
+                registerRefreshRetryGeneration.incrementAndGet()
+                releaseRegisterRefreshRetryWakeLock(
+                    "recovered flow refresh rejected",
+                )
+                val failure = IOException(
+                    "REGISTER on recovered protected flow rejected: " +
+                        "${response.statusCode} ${response.statusString}",
+                )
+                Rlog.w(
+                    TAG,
+                    "Recovered protected main SIP flow cannot refresh the " +
+                        "registration; reconnecting IMS without retrying the " +
+                        "same security association",
+                )
+                myHandler.post { recoverAfterPeriodicRegisterFailure(failure) }
+                return false
+            }
+
+            RegisterRefreshResponseAction.KEEP_REGISTRATION -> {
+                // This callback handles REGISTER refreshes after the initial
+                // registration completed. A carrier may reject a service-tag
+                // update while the existing registration is still valid. Do
+                // not throw from the dispatcher and kill the SIP reader.
+                Rlog.w(
+                    TAG,
+                    "Keeping established IMS registration after REGISTER " +
+                        "refresh failed: ${response.statusCode} " +
+                        response.statusString,
+                )
+                scheduleRegisterRefreshRetry(response)
+                return false
+            }
+
+            RegisterRefreshResponseAction.APPLY_SUCCESS -> Unit
         }
+
+        registerRefreshRetryAttempted.set(false)
+        registerRefreshRetryGeneration.incrementAndGet()
+        releaseRegisterRefreshRetryWakeLock("REGISTER refresh succeeded")
+        mainSipFlowRecoveredSinceRegistration.set(false)
 
         val registeredIdentity = SipRegisterSuccessParser.parse(response)
         if (registeredIdentity == null) {
@@ -3052,6 +3307,123 @@ fun onWfcDisabled(reason: String) {
         return false
     }
 
+    private fun scheduleRegisterRefreshRetry(response: SipResponse) {
+        if (!registerRefreshRetryAttempted.compareAndSet(false, true)) {
+            registerRefreshRetryGeneration.incrementAndGet()
+            releaseRegisterRefreshRetryWakeLock("REGISTER retry rejected")
+            val failure = IOException(
+                "REGISTER refresh retry rejected: " +
+                    "${response.statusCode} ${response.statusString}",
+            )
+            Rlog.w(TAG, "REGISTER refresh retry exhausted; reconnecting IMS")
+            myHandler.post { recoverAfterPeriodicRegisterFailure(failure) }
+            return
+        }
+
+        val retryDelayMs =
+            SipRegisterRefreshResponsePolicy.retryDelayMs(response)
+        val retryGeneration = registerRefreshRetryGeneration.incrementAndGet()
+        val wakeLockTimeoutMs =
+            retryDelayMs +
+                REGISTER_REFRESH_RETRY_RESPONSE_TIMEOUT_MS +
+                REGISTER_REFRESH_RETRY_WAKE_LOCK_GRACE_MS
+        try {
+            registerRefreshRetryWakeLock.acquire(wakeLockTimeoutMs)
+        } catch (t: Throwable) {
+            registerRefreshRetryAttempted.set(false)
+            registerRefreshRetryGeneration.incrementAndGet()
+            val failure = IOException(
+                "Could not hold CPU awake for REGISTER refresh retry",
+                t,
+            )
+            Rlog.w(
+                TAG,
+                "REGISTER refresh retry cannot be made Doze-safe; " +
+                    "reconnecting IMS",
+                t,
+            )
+            myHandler.post { recoverAfterPeriodicRegisterFailure(failure) }
+            return
+        }
+        Rlog.w(
+            TAG,
+            "Scheduling one REGISTER refresh retry after ${retryDelayMs}ms " +
+                "without dropping the established registration; " +
+                "wakeLockTimeoutMs=$wakeLockTimeoutMs",
+        )
+        myHandler.postDelayed(
+            {
+                if (
+                    retryGeneration != registerRefreshRetryGeneration.get() ||
+                    !imsReady
+                ) {
+                    Rlog.d(
+                        TAG,
+                        "Skipping stale REGISTER refresh retry " +
+                            "generation=$retryGeneration",
+                    )
+                    if (retryGeneration == registerRefreshRetryGeneration.get()) {
+                        registerRefreshRetryAttempted.set(false)
+                        registerRefreshRetryGeneration.incrementAndGet()
+                        releaseRegisterRefreshRetryWakeLock(
+                            "REGISTER retry became stale",
+                        )
+                    }
+                    return@postDelayed
+                }
+
+                try {
+                    Rlog.w(TAG, "Retrying failed REGISTER refresh")
+                    register()
+                } catch (t: Throwable) {
+                    registerRefreshRetryAttempted.set(false)
+                    registerRefreshRetryGeneration.incrementAndGet()
+                    releaseRegisterRefreshRetryWakeLock(
+                        "REGISTER retry threw",
+                    )
+                    recoverAfterPeriodicRegisterFailure(t)
+                }
+            },
+            retryDelayMs,
+        )
+        myHandler.postDelayed(
+            {
+                if (
+                    retryGeneration != registerRefreshRetryGeneration.get() ||
+                    !registerRefreshRetryAttempted.get()
+                ) {
+                    return@postDelayed
+                }
+
+                registerRefreshRetryGeneration.incrementAndGet()
+                releaseRegisterRefreshRetryWakeLock(
+                    "REGISTER retry response timeout",
+                )
+                val failure = IOException(
+                    "REGISTER refresh retry received no response within " +
+                        "${REGISTER_REFRESH_RETRY_RESPONSE_TIMEOUT_MS}ms",
+                )
+                Rlog.w(
+                    TAG,
+                    "REGISTER refresh retry timed out; reconnecting IMS",
+                )
+                recoverAfterPeriodicRegisterFailure(failure)
+            },
+            retryDelayMs + REGISTER_REFRESH_RETRY_RESPONSE_TIMEOUT_MS,
+        )
+    }
+
+    private fun releaseRegisterRefreshRetryWakeLock(reason: String) {
+        if (!registerRefreshRetryWakeLock.isHeld) return
+
+        try {
+            registerRefreshRetryWakeLock.release()
+            Rlog.d(TAG, "Released REGISTER refresh retry wake lock: $reason")
+        } catch (t: RuntimeException) {
+            Rlog.w(TAG, "Failed to release REGISTER refresh retry wake lock", t)
+        }
+    }
+
     fun subscribe() {
         val msg = SipRegEventSubscribeBuilder.build(
             mySip = mySip,
@@ -3064,7 +3436,11 @@ fun onWfcDisabled(reason: String) {
         )
         setResponseCallback(msg.headers["call-id"]!![0], ::subscribeCallback)
         Rlog.d(TAG, "Sending ${msg.safeLogSummary()}")
-        writeSipBytesWithFlush(socket.gWriter(), "SipHandler msg", msg.toByteArray())
+        writeSipBytesWithFlush(
+            mainSipWriterForOutbound("reg-event SUBSCRIBE"),
+            "SipHandler msg",
+            msg.toByteArray(),
+        )
     }
 
     fun subscribeCallback(response: SipResponse): Boolean {
@@ -4661,8 +5037,34 @@ fun onWfcDisabled(reason: String) {
             byeHeaders = byeHeaders,
         )
         Rlog.d(TAG, SipRemoteDialogTermination.byeLog(bye))
+        val registeredDialogWriter =
+            callId?.let { dispatcher.writerForCallId(it) }
+        val byeWriter = try {
+            SipRemoteDialogTermination.localDialogRequestWriter(
+                incomingResponseWriter = call.incomingResponseWriter,
+                registeredDialogWriter = registeredDialogWriter,
+                fallbackWriter = {
+                    mainSipWriterForOutbound("local BYE")
+                },
+            )
+        } catch (t: Throwable) {
+            recoverAfterLocalTerminateWriteFailure(
+                requestName = "BYE",
+                callId = callId,
+                reason = "local call termination writer unavailable",
+                error = t,
+            )
+            return
+        }
+        Rlog.d(
+            TAG,
+            "Routing local BYE on dialog flow: " +
+                "callId=$callId " +
+                "incomingWriter=${call.incomingResponseWriter != null} " +
+                "registeredWriter=${registeredDialogWriter != null}",
+        )
         if (!writeSipBytesWithFlush(
-                socket.gWriter(),
+                byeWriter,
                 SipRemoteDialogTermination.byeWriteLabel(),
                 bye.toByteArray(),
             )
@@ -6075,7 +6477,12 @@ fun onWfcDisabled(reason: String) {
                 body = body,
                 debugContext = { context -> imsDualSimDebugContext(context) },
                 writeBytes = { bytes ->
-                    if (!writeSipBytesWithFlush(socket.gWriter(), "initial outgoing INVITE", bytes)) {
+                    if (!writeSipBytesWithFlush(
+                            mainSipWriterForOutbound("initial outgoing INVITE"),
+                            "initial outgoing INVITE",
+                            bytes,
+                        )
+                    ) {
                         throw IOException("initial outgoing INVITE write failed")
                     }
                 },
@@ -6171,6 +6578,13 @@ fun onWfcDisabled(reason: String) {
 
             var rtpSocket: DatagramSocket? = null
             try {
+                if (!ensureMainSipFlowForOutbound("outgoing call")) {
+                    failOutgoingCallSetup(
+                        statusString = "IMS signaling transport unavailable",
+                        logReason = "main SIP flow recovery failed before outgoing call",
+                    )
+                    return@thread
+                }
                 rtpSocket = createOutgoingCallRtpSocket() ?: return@thread
                 if (
                     sendInitialOutgoingInvite(
@@ -8488,10 +8902,23 @@ fun onWfcDisabled(reason: String) {
             failCb()
             return
         }
-        smsHandler.sendSms(smsSmsc, pdu, ref, successCb, failCb)
+        myHandler.post {
+            try {
+                smsHandler.sendSms(smsSmsc, pdu, ref, successCb, failCb)
+            } catch (t: Throwable) {
+                Rlog.w(TAG, "Failed to send IMS SMS", t)
+                failCb()
+            }
+        }
     }
 
     fun sendSmsAck(token: Int, ref: Int, error: Boolean) {
-        smsHandler.sendSmsAck(token, ref, error)
+        myHandler.post {
+            try {
+                smsHandler.sendSmsAck(token, ref, error)
+            } catch (t: Throwable) {
+                Rlog.w(TAG, "Failed to send IMS SMS acknowledgement", t)
+            }
+        }
     }
 }

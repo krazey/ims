@@ -48,6 +48,22 @@ private fun abortTcpSocketFirst(socket: Socket, label: String) {
     closeQuietly(label) { socket.close() }
 }
 
+private fun createTcpSocket(
+    network: Network,
+    localAddr: InetAddress?,
+    localPort: Int,
+): Socket {
+    return network.socketFactory.createSocket().apply {
+        // The protected IMS flow may be reopened with the negotiated port-c
+        // after a remote idle timeout. Set this before the first bind so the
+        // port can be reused after the old TCP socket is synchronously reset.
+        reuseAddress = true
+        if (localAddr != null) {
+            bind(InetSocketAddress(localAddr, localPort))
+        }
+    }
+}
+
 private fun closeUdpSocketFirst(socket: DatagramSocket, label: String) {
     closeQuietly(label) { socket.close() }
 }
@@ -118,7 +134,11 @@ class SipConnectionTcp(
     val _localAddr: InetAddress? = null,
     val _localPort: Int = 0
 ) : SipConnection {
-    val socket: Socket
+    private val stateLock = Any()
+
+    @Volatile
+    var socket: Socket = createTcpSocket(network, _localAddr, _localPort)
+        private set
     /* redefine public localAddr/port for when not specified in argument */
     var localAddr: InetAddress
     var localPort: Int
@@ -131,55 +151,60 @@ class SipConnectionTcp(
     lateinit var outTransform: IpSecTransform
 
     private var ipSecManager: IpSecManager? = null
+    private var permanentlyClosed = false
 
-    var connected = false
+    @Volatile
+    private var connected = false
 
     init {
-        socket = network.socketFactory.createSocket()
-        if (_localAddr != null) {
-            socket.bind(InetSocketAddress(_localAddr, _localPort))
-        }
         localAddr = socket.localAddress
         localPort = socket.localPort
     }
 
     override fun connect(remotePort: Int) {
-        this.remotePort = remotePort
-        socket.connect(InetSocketAddress(remoteAddr, remotePort), SIP_TCP_CONNECT_TIMEOUT_MS)
-        if (_localAddr == null) {
-            // localAddr/Port only valid after connect if no explicit bind
-            localAddr = socket.localAddress
-            localPort = socket.localPort
+        synchronized(stateLock) {
+            check(!permanentlyClosed) { "Cannot connect a permanently closed TCP SIP connection" }
+            this.remotePort = remotePort
+            socket.connect(InetSocketAddress(remoteAddr, remotePort), SIP_TCP_CONNECT_TIMEOUT_MS)
+            if (_localAddr == null) {
+                // localAddr/Port only valid after connect if no explicit bind
+                localAddr = socket.localAddress
+                localPort = socket.localPort
+            }
+            writer = socket.getOutputStream()
+            reader = socket.getInputStream().sipReader()
+            connected = true
         }
-        writer = socket.getOutputStream()
-        reader = socket.getInputStream().sipReader()
-        connected = true
     }
 
     override fun gWriter(): OutputStream {
-        if (!connected || socket.isClosed) {
-            throw java.io.IOException(
-                "TCP SIP writer is unavailable because the socket is not connected/open; " +
+        synchronized(stateLock) {
+            if (!connected || socket.isClosed) {
+                throw java.io.IOException(
+                    "TCP SIP writer is unavailable because the socket is not connected/open; " +
+                        "remote=$remoteAddr:$remotePort local=$localAddr:$localPort connected=$connected closed=${socket.isClosed}"
+                )
+            }
+            return writer ?: throw java.io.IOException(
+                "TCP SIP writer is unavailable because connect did not publish a writer; " +
                     "remote=$remoteAddr:$remotePort local=$localAddr:$localPort connected=$connected closed=${socket.isClosed}"
             )
         }
-        return writer ?: throw java.io.IOException(
-            "TCP SIP writer is unavailable because connect did not publish a writer; " +
-                "remote=$remoteAddr:$remotePort local=$localAddr:$localPort connected=$connected closed=${socket.isClosed}"
-        )
     }
 
     override fun gReader(): SipReader {
-        if (!connected || socket.isClosed) {
-            throw java.io.IOException(
-                "TCP SIP reader is unavailable because the socket is not connected/open; " +
+        synchronized(stateLock) {
+            if (!connected || socket.isClosed) {
+                throw java.io.IOException(
+                    "TCP SIP reader is unavailable because the socket is not connected/open; " +
+                        "remote=$remoteAddr:$remotePort local=$localAddr:$localPort connected=$connected closed=${socket.isClosed}"
+                )
+            }
+            return reader ?: throw java.io.IOException(
+                "TCP SIP reader is unavailable because connect did not publish a reader; " +
                     "remote=$remoteAddr:$remotePort local=$localAddr:$localPort connected=$connected closed=${socket.isClosed}"
             )
         }
-        return reader ?: throw java.io.IOException(
-            "TCP SIP reader is unavailable because connect did not publish a reader; " +
-                "remote=$remoteAddr:$remotePort local=$localAddr:$localPort connected=$connected closed=${socket.isClosed}"
-        )
     }
 
     override fun gLocalPort(): Int {
@@ -190,15 +215,84 @@ class SipConnectionTcp(
         return socket.channel
     }
 
-    override fun close() {
-        connected = false
-        abortTcpSocketFirst(socket, "TCP client socket")
-        removeTcpTransportModeTransforms(ipSecManager, socket, "TCP client socket")
-        if (this::inTransform.isInitialized) {
-            closeQuietly("TCP client inTransform") { inTransform.close() }
+    fun isConnected(): Boolean = connected && !socket.isClosed
+
+    /**
+     * Close only the expired TCP flow while keeping its negotiated IPsec
+     * transforms alive. The registration's inbound server transports continue
+     * using their own transforms and sockets.
+     */
+    fun closeTransportForReconnect() {
+        synchronized(stateLock) {
+            if (!connected && socket.isClosed) return
+
+            connected = false
+            writer = null
+            reader = null
+            abortTcpSocketFirst(socket, "TCP client socket for flow recovery")
+            // Socket close removes its kernel policy. Do not deactivate the
+            // IpSecTransform objects: Android permits applying one transform
+            // to multiple sockets, and the replacement flow reuses them.
         }
-        if (this::outTransform.isInitialized) {
-            closeQuietly("TCP client outTransform") { outTransform.close() }
+    }
+
+    /** Reopen the same protected flow without renegotiating IMS AKA/IPsec. */
+    fun reconnectPreservingIpsec() {
+        synchronized(stateLock) {
+            check(!permanentlyClosed) { "Cannot reconnect a permanently closed TCP SIP connection" }
+            check(!connected) { "TCP SIP connection is already connected" }
+            check(remotePort > 0) { "TCP SIP connection has no previous remote port" }
+
+            val replacement = createTcpSocket(network, localAddr, localPort)
+            try {
+                ipSecManager?.let { manager ->
+                    check(this::inTransform.isInitialized && this::outTransform.isInitialized) {
+                        "TCP SIP IPsec manager exists without initialized transforms"
+                    }
+                    manager.applyTransportModeTransform(
+                        replacement,
+                        IpSecManager.DIRECTION_IN,
+                        inTransform,
+                    )
+                    manager.applyTransportModeTransform(
+                        replacement,
+                        IpSecManager.DIRECTION_OUT,
+                        outTransform,
+                    )
+                }
+
+                replacement.connect(
+                    InetSocketAddress(remoteAddr, remotePort),
+                    SIP_TCP_CONNECT_TIMEOUT_MS,
+                )
+                val replacementWriter = replacement.getOutputStream()
+                val replacementReader = replacement.getInputStream().sipReader()
+
+                socket = replacement
+                writer = replacementWriter
+                reader = replacementReader
+                connected = true
+            } catch (t: Throwable) {
+                abortTcpSocketFirst(replacement, "replacement TCP client socket")
+                throw t
+            }
+        }
+    }
+
+    override fun close() {
+        synchronized(stateLock) {
+            permanentlyClosed = true
+            connected = false
+            writer = null
+            reader = null
+            abortTcpSocketFirst(socket, "TCP client socket")
+            removeTcpTransportModeTransforms(ipSecManager, socket, "TCP client socket")
+            if (this::inTransform.isInitialized) {
+                closeQuietly("TCP client inTransform") { inTransform.close() }
+            }
+            if (this::outTransform.isInitialized) {
+                closeQuietly("TCP client outTransform") { outTransform.close() }
+            }
         }
     }
 
@@ -208,13 +302,16 @@ class SipConnectionTcp(
         clientSpiC: IpSecManager.SecurityParameterIndex,
         serverSpiS: IpSecManager.SecurityParameterIndex
     ) {
-        // Can only do this before connecting?
-        check(!connected)
-        this.ipSecManager = ipSecManager
-        inTransform = ipSecBuilder.buildTransportModeTransform(remoteAddr, clientSpiC)
-        ipSecManager.applyTransportModeTransform(socket, IpSecManager.DIRECTION_IN, inTransform)
-        outTransform = ipSecBuilder.buildTransportModeTransform(localAddr, serverSpiS)
-        ipSecManager.applyTransportModeTransform(socket, IpSecManager.DIRECTION_OUT, outTransform)
+        synchronized(stateLock) {
+            // Can only do this before connecting?
+            check(!connected)
+            check(!permanentlyClosed)
+            this.ipSecManager = ipSecManager
+            inTransform = ipSecBuilder.buildTransportModeTransform(remoteAddr, clientSpiC)
+            ipSecManager.applyTransportModeTransform(socket, IpSecManager.DIRECTION_IN, inTransform)
+            outTransform = ipSecBuilder.buildTransportModeTransform(localAddr, serverSpiS)
+            ipSecManager.applyTransportModeTransform(socket, IpSecManager.DIRECTION_OUT, outTransform)
+        }
     }
 
     override fun gLocalAddr(): InetAddress {

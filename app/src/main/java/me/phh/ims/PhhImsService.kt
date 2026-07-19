@@ -18,6 +18,8 @@ import android.telephony.ims.stub.ImsRegistrationImplBase
 class PhhImsService : ImsService() {
     companion object {
         private const val TAG = "PHH ImsService"
+        private const val PERIODIC_REGISTER_EXACT_DELAY_MS = 3_000_000L
+        private const val PERIODIC_REGISTER_INEXACT_FALLBACK_DELAY_MS = 1_800_000L
 
         var instance: PhhImsService? = null
     }
@@ -56,15 +58,38 @@ class PhhImsService : ImsService() {
         val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val pendingIntent = periodicRegisterPendingIntent()
 
-        // We want recurring 3000s but recurring alarms don't wake up from
-        // doze: alarm will re-arm itself.
-        alarmManager.setAndAllowWhileIdle(
-            AlarmManager.ELAPSED_REALTIME_WAKEUP,
-            SystemClock.elapsedRealtime() + 3_000_000,
-            pendingIntent,
-        )
+        // The carrier may grant only a one-hour registration lifetime. An
+        // inexact 3000s alarm receives a large delivery window and can fire
+        // after that registration and its IPsec association have expired.
+        val nowMs = SystemClock.elapsedRealtime()
+        var exactAlarmScheduled = false
+        if (alarmManager.canScheduleExactAlarms()) {
+            try {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                    nowMs + PERIODIC_REGISTER_EXACT_DELAY_MS,
+                    pendingIntent,
+                )
+                exactAlarmScheduled = true
+            } catch (e: SecurityException) {
+                Rlog.w(TAG, "Exact periodic REGISTER alarm was denied", e)
+            }
+        }
 
-        Rlog.d(TAG, "Alarm set")
+        val delayMs = if (exactAlarmScheduled) {
+            PERIODIC_REGISTER_EXACT_DELAY_MS
+        } else {
+            // Keep the inexact alarm's delivery window safely below the
+            // carrier-granted lifetime if exact alarm access is unavailable.
+            alarmManager.setAndAllowWhileIdle(
+                AlarmManager.ELAPSED_REALTIME_WAKEUP,
+                nowMs + PERIODIC_REGISTER_INEXACT_FALLBACK_DELAY_MS,
+                pendingIntent,
+            )
+            PERIODIC_REGISTER_INEXACT_FALLBACK_DELAY_MS
+        }
+
+        Rlog.d(TAG, "Alarm set exact=$exactAlarmScheduled delayMs=$delayMs")
     }
 
     private fun notifyFeatureSubscriptionChanged(

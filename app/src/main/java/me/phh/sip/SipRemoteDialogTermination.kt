@@ -4,6 +4,13 @@ import java.io.OutputStream
 
 internal object SipRemoteDialogTermination {
 
+    fun localDialogRequestWriter(
+        incomingResponseWriter: OutputStream?,
+        registeredDialogWriter: OutputStream?,
+        fallbackWriter: () -> OutputStream,
+    ): OutputStream =
+        incomingResponseWriter ?: registeredDialogWriter ?: fallbackWriter()
+
 
 
 
