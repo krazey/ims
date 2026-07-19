@@ -239,6 +239,8 @@ class PhhMmTelFeature(
     private var outgoingCallListener: ImsCallSessionListener? = null
     private var outgoingCallActive = false
     private var outgoingCallSipCallId: String? = null
+    private var outgoingCallProgressReported = false
+    private var outgoingCallSessionStateReporter: ((Int) -> Unit)? = null
     private var outgoingCallAutoResumeReporter: ((Map<String, String>) -> Unit)? = null
     private var outgoingCallRemoteHoldReporter: ((Map<String, String>, Boolean) -> Unit)? = null
     private val incomingCallListenersLock = Object()
@@ -636,11 +638,14 @@ class PhhMmTelFeature(
             }
 
             override fun isInCall(): Boolean {
-                return true
+                return mState != State.IDLE &&
+                    mState != State.INVALID &&
+                    mState != State.TERMINATED
             }
 
             override fun start(callee: String, profile: ImsCallProfile) {
             Rlog.d(TAG, "Starting outgoing IMS call")
+            outgoingCallProgressReported = false
 
             if (!sipHandler.isReadyForOutgoingCall()) {
                 Rlog.w(TAG, "Rejecting outgoing call while IMS is reconnecting/not ready")
@@ -786,11 +791,17 @@ class PhhMmTelFeature(
             }
             override fun terminate(reason: Int) {
                 Rlog.d(TAG, "Terminating call with reason $reason")
+                if (mState == State.TERMINATED) {
+                    Rlog.d(TAG, "Ignoring terminate for an already terminated call")
+                    return
+                }
+                mState = State.TERMINATING
                 sipHandler.myHandler.post {
                     sipHandler.terminateCall(outgoingCallSipCallId)
                 }
             }
         }.also { session ->
+            outgoingCallSessionStateReporter = { state -> session.mState = state }
             sipHandler.onOutgoingCallConnected = { _: Object, extras: Map<String, String> ->
                 Rlog.d(TAG, "Outgoing call connected")
                 extras["call-id"]?.let { outgoingCallSipCallId = it }
@@ -800,16 +811,19 @@ class PhhMmTelFeature(
                 )
                 session.currentCallProfile = callProfile
                 session.mListener.callSessionInitiated(callProfile)
+                outgoingCallProgressReported = true
             }
 
             sipHandler.onOutgoingCallProgressing = { _: Object, extras: Map<String, String> ->
                 Rlog.d(TAG, "Outgoing call progressing: $extras")
                 extras["call-id"]?.let { outgoingCallSipCallId = it }
+                session.mState = ImsCallSessionImplBase.State.ESTABLISHING
                 val callProfile = makeVoiceCallProfile()
                 callProfile.mMediaProfile.mAudioDirection =
                     android.telephony.ims.ImsStreamMediaProfile.DIRECTION_INACTIVE
                 session.currentCallProfile = callProfile
                 session.mListener.callSessionProgressing(callProfile.mMediaProfile)
+                outgoingCallProgressReported = true
             }
 
             outgoingCallAutoResumeReporter = { extras ->
@@ -1003,7 +1017,11 @@ class PhhMmTelFeature(
                 ImsReasonInfo(ImsReasonInfo.CODE_USER_TERMINATED_BY_REMOTE, 0, statusMessage)
             }
 
-            statusCode >= 400 -> ImsReasonInfo(ImsReasonInfo.CODE_NETWORK_REJECT, 0, statusMessage)
+            statusCode >= 300 -> ImsReasonInfo(
+                SipImsReasonCodeMapper.fromStatusCode(statusCode),
+                0,
+                statusMessage,
+            )
 
             else -> ImsReasonInfo(ImsReasonInfo.CODE_USER_TERMINATED_BY_REMOTE, 0, "Kikoo")
         }
@@ -1366,19 +1384,31 @@ sipHandler.imsFailureCallback = {
                         ((callStartFailed || outgoingCall) && outgoingCallSipCallId == null))
 
             if (matchesOutgoingCall) {
+                val failureCallback = OutgoingCallFailureCallbackPolicy.select(
+                    callStartFailed = callStartFailed,
+                    progressReported = outgoingCallProgressReported,
+                )
                 Rlog.d(
                     TAG,
                     "Routing outgoing call cancellation to callId=$cancelledCallId " +
-                        "callStartFailed=$callStartFailed outgoingCall=$outgoingCall",
+                        "callStartFailed=$callStartFailed " +
+                        "progressReported=$outgoingCallProgressReported " +
+                        "callback=$failureCallback outgoingCall=$outgoingCall",
                 )
-                if (callStartFailed) {
-                    outgoingCallListener?.callSessionInitiatingFailed(reasonInfo)
-                } else {
-                    outgoingCallListener?.callSessionTerminated(reasonInfo)
+                outgoingCallSessionStateReporter?.invoke(
+                    ImsCallSessionImplBase.State.TERMINATED,
+                )
+                when (failureCallback) {
+                    OutgoingCallFailureCallback.INITIATING_FAILED ->
+                        outgoingCallListener?.callSessionInitiatingFailed(reasonInfo)
+                    OutgoingCallFailureCallback.TERMINATED ->
+                        outgoingCallListener?.callSessionTerminated(reasonInfo)
                 }
                 outgoingCallActive = false
                 outgoingCallSipCallId = null
+                outgoingCallProgressReported = false
                 outgoingCallListener = null
+                outgoingCallSessionStateReporter = null
                 outgoingCallAutoResumeReporter = null
                 outgoingCallRemoteHoldReporter = null
             } else {
@@ -1429,11 +1459,16 @@ sipHandler.imsFailureCallback = {
             incomingCallConnectedReportersByCallId.clear()
             lastIncomingCallListener = null
         }
+        outgoingCallSessionStateReporter?.invoke(
+            ImsCallSessionImplBase.State.TERMINATED,
+        )
         outgoingCallListener = null
+        outgoingCallSessionStateReporter = null
         outgoingCallAutoResumeReporter = null
         outgoingCallRemoteHoldReporter = null
         outgoingCallActive = false
         outgoingCallSipCallId = null
+        outgoingCallProgressReported = false
         sipRegistrationReadyForCapabilities = false
         telephonyManager = null
 
