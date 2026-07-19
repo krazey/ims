@@ -168,6 +168,11 @@ internal data class SipCarrierPolicyOverlay(
             outgoingTargetUriType = strings["outgoing_target_uri_type"]
                 ?.let { enumValueOrNull<SipCarrierPolicy.OutgoingTargetUriType>(it) }
                 ?: base.outgoingTargetUriType,
+            outgoingTargetDomainPolicy = strings["outgoing_target_domain_policy"]
+                ?.let {
+                    enumValueOrNull<SipCarrierPolicy.OutgoingTargetDomainPolicy>(it)
+                }
+                ?: base.outgoingTargetDomainPolicy,
             securityClientAlgs = stringArrays["security_client_algs"]
                 ?: base.securityClientAlgs,
             securityClientEalgs = stringArrays["security_client_ealgs"]

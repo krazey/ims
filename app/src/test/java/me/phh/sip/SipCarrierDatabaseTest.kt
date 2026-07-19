@@ -213,6 +213,13 @@ class SipCarrierDatabaseTest {
                 "ims.example.test",
             ) == "sip:12345;phone-context=ims.example.test@ims.example.test;user=phone",
         )
+        require(
+            resolved.outgoingTargetUri(
+                telUri = "tel:+00000000000",
+                realm = "ims.example.test",
+                registeredSipUri = "sip:+00000000001@ims.operator.test",
+            ) == "sip:+00000000000@ims.operator.test;user=phone",
+        )
     }
 
     @Test

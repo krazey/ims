@@ -103,6 +103,7 @@ internal object SipOutgoingInviteRequestBuilder {
             telUri = baseRequestContext.telUri,
             carrierSettings = carrierSettings,
             realm = realm,
+            registeredSipUri = mySip,
             baseHeaders = baseRequestContext.baseHeaders,
             sipInstance = baseRequestContext.sipInstance,
             localEndpoint = baseRequestContext.localEndpoint,
@@ -219,6 +220,7 @@ internal object SipOutgoingInviteRequestBuilder {
         telUri: String,
         carrierSettings: SipCarrierSettings,
         realm: String,
+        registeredSipUri: String,
         baseHeaders: Map<String, List<String>>,
         sipInstance: String,
         localEndpoint: String,
@@ -230,7 +232,11 @@ internal object SipOutgoingInviteRequestBuilder {
         singtelPublicSipUri: (String) -> String,
         supportSecurityAgreement: Boolean,
     ): OutgoingInviteCarrierRequestShape {
-        val databaseOutgoingTargetUri = carrierSettings.outgoingTargetUri(telUri, realm)
+        val databaseOutgoingTargetUri = carrierSettings.outgoingTargetUri(
+            telUri = telUri,
+            realm = realm,
+            registeredSipUri = registeredSipUri,
+        )
         val singtelStockOutgoingTargetUri = if (singtelStockOutgoingCarrier) {
             singtelPublicSipUri(normalizedPhoneNumber)
         } else {

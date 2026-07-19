@@ -10,6 +10,12 @@ The XML accepts CarrierConfig-style `boolean`, `long`, `string`, and
 to typed policy fields is centralized in `SipCarrierPolicyOverlay`; unknown
 keys are ignored so a newer policy file can still be read by an older build.
 
+Samsung SIP-target profiles use the domain of the first SIP identity returned
+by REGISTER. Missing or malformed associated identities safely fall back to
+the registration realm. A tested carrier exception can select
+`outgoing_target_domain_policy=REGISTRATION_REALM` when its call-routing domain
+must remain tied to the authentication realm.
+
 ## Public reference data
 
 Useful upstream inputs are:

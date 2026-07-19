@@ -260,6 +260,8 @@ data class SipCarrierPolicy(
     val outgoingPaniPolicy: OutgoingPaniPolicy = OutgoingPaniPolicy.NONE,
     val outgoingInviteShape: OutgoingInviteShape = OutgoingInviteShape.DEFAULT,
     val outgoingTargetUriType: OutgoingTargetUriType = OutgoingTargetUriType.TEL,
+    val outgoingTargetDomainPolicy: OutgoingTargetDomainPolicy =
+        OutgoingTargetDomainPolicy.PRIMARY_ASSOCIATED_URI,
     val securityClientAlgs: List<String> = DEFAULT_SECURITY_CLIENT_ALGS,
     val securityClientEalgs: List<String> = DEFAULT_SECURITY_CLIENT_EALGS,
     val minSeSeconds: Int = 90,
@@ -378,13 +380,32 @@ data class SipCarrierPolicy(
         return paniValue?.let { mapOf("P-Access-Network-Info" to listOf(it)) } ?: emptyMap()
     }
 
-    fun outgoingTargetUri(telUri: String, realm: String): String =
+    fun outgoingTargetUri(
+        telUri: String,
+        realm: String,
+        registeredSipUri: String? = null,
+    ): String =
         when (outgoingTargetUriType) {
             OutgoingTargetUriType.TEL -> telUri
             OutgoingTargetUriType.SIP_USER_PHONE -> {
-                val domain = phoneContextForLocalTelUri(realm)
+                val registeredDomain = registeredSipUri
+                    ?.takeIf { it.startsWith("sip:", ignoreCase = true) }
+                    ?.substringAfter(":")
+                    ?.substringAfter("@", missingDelimiterValue = "")
+                    ?.substringBefore(";")
+                    ?.trim()
+                    ?.takeIf { it.isValidSipDomain() }
+                val domain = when (outgoingTargetDomainPolicy) {
+                    OutgoingTargetDomainPolicy.REGISTRATION_REALM -> null
+                    OutgoingTargetDomainPolicy.PRIMARY_ASSOCIATED_URI -> registeredDomain
+                } ?: phoneContextForLocalTelUri(realm)
                 "sip:${telUri.removePrefix("tel:")}@$domain;user=phone"
             }
+        }
+
+    private fun String.isValidSipDomain(): Boolean =
+        isNotBlank() && none {
+            it.isWhitespace() || it == '<' || it == '>' || it == '"' || it == '@'
         }
 
     fun useSingTelStockPolicy(realm: String, registerTargetRealm: String = realm): Boolean =
@@ -449,6 +470,11 @@ data class SipCarrierPolicy(
         SIP_USER_PHONE,
     }
 
+    enum class OutgoingTargetDomainPolicy {
+        REGISTRATION_REALM,
+        PRIMARY_ASSOCIATED_URI,
+    }
+
     enum class OutgoingInviteShape {
         DEFAULT,
         SINGTEL_COMPACT_STOCK,
@@ -506,6 +532,8 @@ data class SipCarrierSettings(
     val inviteFailurePolicy: SipInviteFailurePolicy get() = policy.inviteFailurePolicy
     val outgoingTargetUriType: SipCarrierPolicy.OutgoingTargetUriType
         get() = policy.outgoingTargetUriType
+    val outgoingTargetDomainPolicy: SipCarrierPolicy.OutgoingTargetDomainPolicy
+        get() = policy.outgoingTargetDomainPolicy
     val minSeSeconds: Int get() = policy.minSeSeconds
     val sessionExpiresSeconds: Int get() = policy.sessionExpiresSeconds
 
@@ -538,6 +566,7 @@ data class SipCarrierSettings(
             "precondition=${policy.preconditionPolicy} roaming=${policy.roamingSupported} " +
             "networks=${policy.supportedNetworks} services=${policy.supportedServices} " +
             "switches=${policy.serviceSwitches} uri=${policy.outgoingTargetUriType} " +
+            "targetDomain=${policy.outgoingTargetDomainPolicy} " +
             "subscribe=${policy.subscribeRegEvent} gruu=${policy.registerGruuSupported} " +
             "regExpires=${policy.registrationExpiresSeconds} " +
             "sessionExpires=${policy.sessionExpiresSeconds} minSe=${policy.minSeSeconds} " +
@@ -573,8 +602,11 @@ data class SipCarrierSettings(
     fun outgoingPaniHeaders(registrationTech: Int): SipHeadersMap =
         policy.outgoingPaniHeaders(registrationTech)
 
-    fun outgoingTargetUri(telUri: String, realm: String): String =
-        policy.outgoingTargetUri(telUri, realm)
+    fun outgoingTargetUri(
+        telUri: String,
+        realm: String,
+        registeredSipUri: String? = null,
+    ): String = policy.outgoingTargetUri(telUri, realm, registeredSipUri)
 
     fun useSingTelStockPolicy(realm: String, registerTargetRealm: String = realm): Boolean =
         policy.useSingTelStockPolicy(realm, registerTargetRealm)
