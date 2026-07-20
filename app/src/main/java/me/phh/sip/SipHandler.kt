@@ -262,6 +262,7 @@ class SipHandler(
 
     lateinit private var plainSocket: SipConnection
     lateinit private var socket: SipConnection
+    private var protectedUdpClient: SipConnectionUdpProtectedClient? = null
     lateinit private var serverSocket: SipConnectionTcpServer
     lateinit private var serverSocketUdp: SipConnectionUdpServer
     private val mainSipFlowRecoveryLock = Any()
@@ -318,13 +319,11 @@ class SipHandler(
     )
     private val smsFallbackPolicy = SipSmsFallbackPolicy(TAG, carrierSettings.smsPolicy)
     /*
-     * UDP SIP responses must be sent on the same 5-tuple that delivered the
-     * request. A plain ByteArrayOutputStream only works for immediate responses
-     * generated before the UDP receive loop returns; it breaks delayed dialog
-     * responses such as incoming final 200 OK and can make peers retransmit
-     * in-dialog UPDATE because the 200 OK was not delivered promptly.
+     * Keep the UDP dialog flow available after the receive loop returns. This
+     * writer carries delayed responses such as the final incoming 200 OK and
+     * locally generated in-dialog requests such as BYE.
      */
-    private inner class UdpSipResponseWriter(
+    private inner class UdpSipDialogWriter(
         private val remoteAddress: InetAddress,
         private val remotePort: Int,
     ) : OutputStream() {
@@ -354,69 +353,75 @@ class SipHandler(
 
         private fun sendDatagram(bytes: ByteArray) {
             if (bytes.isEmpty()) return
-            val route = SipUdpResponseRouting.route(
-                responseBytes = bytes,
+            val route = SipUdpResponseRouting.routeIfResponse(
+                messageBytes = bytes,
                 sourceAddress = remoteAddress,
                 sourcePort = remotePort,
             )
-            val destinationAddress = route.destinationAddress ?: try {
-                network.getByName(route.destinationHost!!)
-            } catch (t: Throwable) {
-                Rlog.w(
-                    TAG,
-                    "Could not resolve SIP Via response target " +
-                        "${route.destinationHost}; using packet source",
-                    t,
-                )
+            val destinationAddress = if (route == null) {
                 remoteAddress
-            }
-            val destinationPort = if (
-                route.destinationAddress == null && destinationAddress === remoteAddress
-            ) {
-                remotePort
             } else {
-                route.destinationPort
+                route.destinationAddress ?: try {
+                    network.getByName(route.destinationHost!!)
+                } catch (t: Throwable) {
+                    Rlog.w(
+                        TAG,
+                        "Could not resolve SIP Via response target " +
+                            "${route.destinationHost}; using packet source",
+                        t,
+                    )
+                    remoteAddress
+                }
             }
-            val routedBytes = route.bytes
+            val destinationPort = when {
+                route == null -> remotePort
+                route.destinationAddress == null && destinationAddress === remoteAddress ->
+                    remotePort
+                else -> route.destinationPort
+            }
+            val routedBytes = route?.bytes ?: bytes
             val firstLine = routedBytes.toString(Charsets.US_ASCII)
                 .lineSequence()
                 .firstOrNull()
                 .orEmpty()
 
-            val channel = serverSocketUdp.socket.channel
-            if (channel != null) {
-                val sent = channel.send(
-                    java.nio.ByteBuffer.wrap(routedBytes),
-                    java.net.InetSocketAddress(destinationAddress, destinationPort),
-                )
-                if (sent != routedBytes.size) {
-                    Rlog.w(
-                        TAG,
-                        "UDP SIP response partial send bytes=$sent " +
-                            "expected=${routedBytes.size} target=$destinationAddress:" +
-                            "$destinationPort firstLine=$firstLine",
-                    )
-                }
+            val protectedClient = protectedUdpClient
+            val useProtectedClientFlow =
+                carrierSettings.policy.udpResponseFlowPolicy ==
+                    SipUdpResponseFlowPolicy.PROTECTED_CLIENT &&
+                    protectedClient != null
+            val actualDestinationAddress: InetAddress
+            val actualDestinationPort: Int
+            val sent = if (useProtectedClientFlow) {
+                val client = checkNotNull(protectedClient)
+                actualDestinationAddress = client.remoteAddr
+                actualDestinationPort = client.remotePort()
+                client.send(routedBytes)
             } else {
-                // Fallback for sockets not backed by a DatagramChannel. This can still
-                // contend with receive(), but keeps the writer functional on all socket
-                // construction paths.
-                serverSocketUdp.socket.send(
-                    DatagramPacket(
-                        routedBytes,
-                        routedBytes.size,
-                        destinationAddress,
-                        destinationPort,
-                    ),
+                actualDestinationAddress = destinationAddress
+                actualDestinationPort = destinationPort
+                serverSocketUdp.send(
+                    routedBytes,
+                    destinationAddress,
+                    destinationPort,
+                )
+            }
+            if (sent != routedBytes.size) {
+                Rlog.w(
+                    TAG,
+                    "UDP SIP message partial send bytes=$sent " +
+                    "expected=${routedBytes.size} target=$actualDestinationAddress:" +
+                        "$actualDestinationPort firstLine=$firstLine",
                 )
             }
 
             Rlog.d(
                 TAG,
-                "UDP SIP response sent bytes=${routedBytes.size} " +
-                    "target=$destinationAddress:$destinationPort " +
+                "UDP SIP message sent bytes=${routedBytes.size} " +
+                    "target=$actualDestinationAddress:$actualDestinationPort " +
                     "packetSource=$remoteAddress:$remotePort " +
-                    "route=${route.diagnostic} " +
+                    "route=${route?.diagnostic ?: "request-passthrough"} " +
+                    "flow=${if (useProtectedClientFlow) "3gpp-client" else "server"} " +
                     "firstLine=$firstLine",
             )
         }
@@ -1135,6 +1140,10 @@ fun setRequestCallback(method: SipMethod, cb: (SipRequest) -> Int) {
         }
         Rlog.w(TAG, "Invalidated SIP reader generation=$newGeneration while closing transports: $reason")
         BoundedCloser.close(TAG, "plainSocket") { if (this::plainSocket.isInitialized) plainSocket.close() }
+        BoundedCloser.close(TAG, "protected UDP client") {
+            protectedUdpClient?.close()
+            protectedUdpClient = null
+        }
         BoundedCloser.close(TAG, "socket") { if (this::socket.isInitialized) socket.close() }
         BoundedCloser.close(TAG, "TCP server") { if (this::serverSocket.isInitialized) serverSocket.close() }
         BoundedCloser.close(TAG, "UDP server") { if (this::serverSocketUdp.isInitialized) serverSocketUdp.close() }
@@ -2334,6 +2343,32 @@ fun onWfcDisabled(reason: String) {
                 serverOutTransform = serverOutTransform)
             ipsecResourcesClosed = false
             socket.enableIpsec(ipSecBuilder, ipSecManager, clientSpiC, serverSpiS)
+            val tcpControl = socket as? SipConnectionTcp
+            if (
+                carrierSettings.policy.udpResponseFlowPolicy ==
+                    SipUdpResponseFlowPolicy.PROTECTED_CLIENT &&
+                    tcpControl != null
+            ) {
+                val responseClient = SipConnectionUdpProtectedClient(
+                    network = network,
+                    remoteAddr = pcscfAddr,
+                    localAddr = localAddr,
+                    localPort = tcpControl.gLocalPort(),
+                )
+                responseClient.enableIpsec(
+                    ipSecManager,
+                    tcpControl.outTransform,
+                )
+                responseClient.connect(portS)
+                protectedUdpClient = responseClient
+                Rlog.i(
+                    TAG,
+                    "Opened protected UDP client response flow localPort=" +
+                        "${tcpControl.gLocalPort()} remote=" +
+                        "${pcscfAddr.hostAddress}:$portS spiS=" +
+                        securityServerParams["spi-s"],
+                )
+            }
             serverSocket.enableIpsec(ipSecManager, serverInTransform, serverOutTransform)
             serverSocketUdp.enableIpsec(ipSecManager, serverInTransform, serverOutTransform)
         }
@@ -2793,7 +2828,7 @@ fun onWfcDisabled(reason: String) {
 
                     val baIs = ByteArrayInputStream(dgramPacketIn.data, dgramPacketIn.offset, dgramPacketIn.length)
                     val reader = baIs.sipReader()
-                    val writer = UdpSipResponseWriter(dgramPacketIn.address, dgramPacketIn.port)
+                    val writer = UdpSipDialogWriter(dgramPacketIn.address, dgramPacketIn.port)
                     while (parseMessage(reader, writer)) {
                     }
 

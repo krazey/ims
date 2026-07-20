@@ -30,6 +30,7 @@ class SipCarrierPolicyOverlayTest {
             strings = mapOf(
                 "outgoing_pani_policy" to "registration_access_tech",
                 "outgoing_invite_shape" to "singtel_compact_stock",
+                "udp_response_flow_policy" to "protected_client",
             ),
             stringArrays = mapOf(
                 "sms_fallback_sip_status_codes" to listOf("403", "503", "bad"),
@@ -45,6 +46,10 @@ class SipCarrierPolicyOverlayTest {
         require(
             resolved.outgoingInviteShape ==
                 SipCarrierPolicy.OutgoingInviteShape.SINGTEL_COMPACT_STOCK,
+        )
+        require(
+            resolved.udpResponseFlowPolicy ==
+                SipUdpResponseFlowPolicy.PROTECTED_CLIENT,
         )
         require(resolved.smsPolicy.fallbackSipStatusCodes == setOf(403, 503))
         require(resolved.smsPolicy.rpResultWaitMs == 20_000L)

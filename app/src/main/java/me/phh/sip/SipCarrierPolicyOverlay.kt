@@ -132,6 +132,9 @@ internal data class SipCarrierPolicyOverlay(
                 ?: base.ipVersionPolicy,
             ipsecSupported = booleans["ipsec_supported"]
                 ?: base.ipsecSupported,
+            udpResponseFlowPolicy = strings["udp_response_flow_policy"]
+                ?.let { enumValueOrNull<SipUdpResponseFlowPolicy>(it) }
+                ?: base.udpResponseFlowPolicy,
             preconditionPolicy = preconditionPolicy,
             roamingSupported = booleans["roaming_supported"]
                 ?: base.roamingSupported,

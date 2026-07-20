@@ -41,6 +41,22 @@ class SipUdpResponseRoutingTest {
     }
 
     @Test
+    fun `local request bypasses response routing`() {
+        val bytes = (
+            "BYE sip:user@example.com SIP/2.0\r\n" +
+                "Via: SIP/2.0/UDP [2001:db8::30]:5067;branch=z9\r\n" +
+                "Content-Length: 0\r\n\r\n"
+            ).toByteArray(Charsets.US_ASCII)
+        val route = SipUdpResponseRouting.routeIfResponse(
+            messageBytes = bytes,
+            sourceAddress = packetSource,
+            sourcePort = 32922,
+        )
+
+        assertNull(route)
+    }
+
+    @Test
     fun `received parameter overrides Via host but retains sent-by port`() {
         val route = route(
             "SIP/2.0/UDP proxy.example:5070;branch=z9;received=2001:db8::40",

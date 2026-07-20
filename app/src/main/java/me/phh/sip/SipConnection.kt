@@ -565,6 +565,20 @@ class SipConnectionUdpServer(
                 as FileDescriptor
     }
 
+    fun send(bytes: ByteArray, remoteAddress: InetAddress, remotePort: Int): Int {
+        val channel = socket.channel
+        if (channel != null) {
+            return channel.send(
+                ByteBuffer.wrap(bytes),
+                InetSocketAddress(remoteAddress, remotePort),
+            )
+        }
+        socket.send(
+            DatagramPacket(bytes, bytes.size, remoteAddress, remotePort),
+        )
+        return bytes.size
+    }
+
     fun gReader(): SipReader {
         return object: InputStream() {
             val currentDgram = DatagramPacket(ByteArray(128*1024), 128*1024)
@@ -607,13 +621,13 @@ class SipConnectionUdpServer(
         this.ipSecManager = ipSecManager
         this.inTransform = inTransform
         ipSecManager.applyTransportModeTransform(
-            socketFd,
+            socket,
             IpSecManager.DIRECTION_IN,
             inTransform
         )
         this.outTransform = outTransform
         ipSecManager.applyTransportModeTransform(
-            socketFd,
+            socket,
             IpSecManager.DIRECTION_OUT,
             outTransform
         )
@@ -633,6 +647,77 @@ class SipConnectionUdpServer(
 
     fun getChannel(): SelectableChannel {
         return socket.channel
+    }
+}
+
+/**
+ * UDP half of the UE protected-client flow when the main SIP control flow is
+ * TCP. 3GPP requires UDP responses to server-initiated requests to leave from
+ * port-uc towards port-ps, rather than reversing the inbound server flow.
+ *
+ * The outbound transform is owned by the main TCP connection and may be
+ * applied to this protocol sibling as well.
+ */
+class SipConnectionUdpProtectedClient(
+    network: Network,
+    val remoteAddr: InetAddress,
+    localAddr: InetAddress,
+    localPort: Int,
+) {
+    private val socket: DatagramSocket
+    private var remotePort: Int = 0
+    private var ipSecManager: IpSecManager? = null
+
+    init {
+        val channel = DatagramChannel.open(
+            if (remoteAddr is Inet6Address) {
+                StandardProtocolFamily.INET6
+            } else {
+                StandardProtocolFamily.INET
+            },
+        )
+        channel.bind(InetSocketAddress(localAddr, localPort))
+        socket = channel.socket()
+        network.bindSocket(socket)
+    }
+
+    fun enableIpsec(
+        ipSecManager: IpSecManager,
+        outTransform: IpSecTransform,
+    ) {
+        this.ipSecManager = ipSecManager
+        ipSecManager.applyTransportModeTransform(
+            socket,
+            IpSecManager.DIRECTION_OUT,
+            outTransform,
+        )
+    }
+
+    fun connect(remotePort: Int) {
+        check(remotePort in 1..65535) { "Invalid protected UDP peer port: $remotePort" }
+        this.remotePort = remotePort
+        socket.connect(remoteAddr, remotePort)
+    }
+
+    fun send(bytes: ByteArray): Int {
+        check(socket.isConnected) { "Protected UDP client flow is not connected" }
+        val channel = socket.channel
+        if (channel != null) {
+            return channel.write(ByteBuffer.wrap(bytes))
+        }
+        socket.send(DatagramPacket(bytes, bytes.size))
+        return bytes.size
+    }
+
+    fun remotePort(): Int = remotePort
+
+    fun close() {
+        closeUdpSocketFirst(socket, "UDP protected client socket")
+        removeUdpTransportModeTransforms(
+            ipSecManager,
+            socket,
+            "UDP protected client socket",
+        )
     }
 }
 

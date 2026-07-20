@@ -11,6 +11,11 @@ internal data class SipUdpResponseRoute(
     val diagnostic: String,
 )
 
+enum class SipUdpResponseFlowPolicy {
+    SERVER,
+    PROTECTED_CLIENT,
+}
+
 internal object SipUdpResponseRouting {
     private const val DEFAULT_SIP_PORT = 5060
 
@@ -45,7 +50,11 @@ internal object SipUdpResponseRouting {
             params["received"].isNullOrBlank().not() -> params["received"]
             else -> sentBy.host
         }
-        val destinationAddress = if (rportPresent) sourceAddress else null
+        val destinationAddress = if (rportPresent) {
+            sourceAddress
+        } else {
+            null
+        }
         val normalizedBytes = normalizeVia(
             text = text,
             viaRange = viaRange,
@@ -66,6 +75,17 @@ internal object SipUdpResponseRouting {
                 "rportPresent=$rportPresent explicitRport=$explicitRport " +
                 "maddr=${params["maddr"]} received=${params["received"]}",
         )
+    }
+
+    fun routeIfResponse(
+        messageBytes: ByteArray,
+        sourceAddress: InetAddress,
+        sourcePort: Int,
+    ): SipUdpResponseRoute? {
+        if (!messageBytes.toString(Charsets.US_ASCII).startsWith("SIP/2.0 ")) {
+            return null
+        }
+        return route(messageBytes, sourceAddress, sourcePort)
     }
 
     private fun sourceRoute(

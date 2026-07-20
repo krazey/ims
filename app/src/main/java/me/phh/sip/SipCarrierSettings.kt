@@ -245,6 +245,8 @@ data class SipCarrierPolicy(
     val transportPolicy: SipTransportPolicy = SipTransportPolicy.DEFAULT,
     val ipVersionPolicy: SipIpVersionPolicy = SipIpVersionPolicy.ANY,
     val ipsecSupported: Boolean = true,
+    val udpResponseFlowPolicy: SipUdpResponseFlowPolicy =
+        SipUdpResponseFlowPolicy.SERVER,
     val preconditionPolicy: SipPreconditionPolicy = SipPreconditionPolicy(),
     val roamingSupported: Boolean = true,
     val supportedNetworks: Set<String> = emptySet(),
@@ -570,6 +572,7 @@ data class SipCarrierSettings(
         return "mccmnc=$mccMnc mno=${record?.mapping?.mnoName ?: "none"} " +
             "profile=${profile?.name ?: "default"} source=${record?.source ?: "built-in"} " +
             "transport=${policy.transportPolicy} udp=${useUdpControlSocket()} " +
+            "udpResponseFlow=${policy.udpResponseFlowPolicy} " +
             "ip=${policy.ipVersionPolicy} ipsec=${policy.ipsecSupported} " +
             "precondition=${policy.preconditionPolicy} roaming=${policy.roamingSupported} " +
             "networks=${policy.supportedNetworks} services=${policy.supportedServices} " +

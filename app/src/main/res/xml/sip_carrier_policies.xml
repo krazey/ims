@@ -57,6 +57,13 @@
         </string-array>
     </carrier>
 
+    <!-- Jio requires responses on the asymmetric 3GPP client-side flow. -->
+    <carrier mccmnc="405861" name="Jio India">
+        <string
+            name="udp_response_flow_policy"
+            value="PROTECTED_CLIENT" />
+    </carrier>
+
     <!-- AOSP canonical carrierId 1892. -->
     <carrier mccmnc="450006" name="LG Uplus Korea">
         <boolean name="control_socket_udp" value="true" />
