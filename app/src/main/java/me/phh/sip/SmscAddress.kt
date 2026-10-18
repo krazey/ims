@@ -9,6 +9,8 @@ internal data class smsHeaders(
     val dest: String,
     val callId: String,
     val cseq: String,
+    // RP reference of the RP-DATA being acked, not the framework tracker id
+    val rpRef: Byte = 0,
 )
 
 internal fun decodeSmscScaPdu(raw: String?): String? {

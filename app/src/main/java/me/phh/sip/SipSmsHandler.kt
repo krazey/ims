@@ -220,7 +220,7 @@ internal class SipSmsHandler(
                 val cseq = request.headers["cseq"]!![0]
                 val token = smsLock.withLock {
                     val nextToken = smsToken++
-                    smsHeadersMap[nextToken] = smsHeaders(dest, callId, cseq)
+                    smsHeadersMap[nextToken] = smsHeaders(dest, callId, cseq, sms.ref)
                     nextToken
                 }
 
@@ -479,14 +479,17 @@ internal class SipSmsHandler(
     }
 
     fun sendSmsAck(token: Int, ref: Int, error: Boolean) {
-        Rlog.d(tag, "sending sms ack")
-        val body = SipSmsEncodeAck(ref.toByte())
         val headers = smsLock.withLock { smsHeadersMap.remove(token) } ?: return
 
         // Do not send ACK on framework error. Should we send an error report?
         if (error) {
             return
         }
+
+        // ack with the RP reference the network sent, not the framework's
+        val ackRef = headers.rpRef.toInt() and 0xff
+        Rlog.d(tag, "sending sms ack ref=$ackRef (frameworkRef=$ref)")
+        val body = SipSmsEncodeAck(ackRef.toByte())
 
         val securityHeaders = if (carrierSettings.ipsecSupported) {
             """
@@ -518,7 +521,7 @@ internal class SipSmsHandler(
 
         Rlog.d(tag, "Sending ${msg.safeLogSummary()}")
         val writer = writerProvider()
-        val writeLabel = "outgoing SMS ACK ref=$ref"
+        val writeLabel = "outgoing SMS ACK ref=$ackRef"
         if (!writeSmsSipBytesWithFlush(writer, writeLabel, msg.toByteArray())) {
             responseCallbackRemover(callId)
             sipWriteFailureListener(writeLabel)
